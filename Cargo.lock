@@ -3,6 +3,15 @@
 version = 4
 
 [[package]]
+name = "loupe-bench"
+version = "0.1.0"
+dependencies = [
+ "loupe-distance",
+ "loupe-hnsw",
+ "loupe-storage",
+]
+
+[[package]]
 name = "loupe-distance"
 version = "0.1.0"
 

@@ -94,7 +94,7 @@ The explaining only means something because the engine under it is real:
 
 | Milestone | Scope | State |
 |---|---|---|
-| M0 | In-memory HNSW, SearchTrace, storage accessor, bench skeleton | ⬜ not started |
+| M0 | In-memory HNSW, SearchTrace, storage accessor, bench skeleton | 🟡 in progress |
 | M1 | SIMD distance kernels (NEON / AVX) | ⬜ |
 | M2 | Filtered search: the strategies | ⬜ |
 | M3 | Correlation-aware benchmark matrix plus arXiv corpus | ⬜ |
@@ -115,6 +115,12 @@ Legend: ⬜ not started · 🟡 in progress · ✅ done. Links to PRs and issues
 
 ## Results
 
+First check, on the small SIFT set (10,000 vectors, 128 dimensions, 100 queries):
+recall@10 is 0.997 under both L2 and cosine, at about 12,000 queries per second.
+The search looks at roughly 660 vectors per query instead of all 10,000, so it is
+already skipping most of the work. Numbers on the full million-vector set land
+with the benchmark suite.
+
 Coming in M5: recall and speed plots against FAISS, Qdrant, Weaviate, and
 pgvector, across the selectivity and correlation grid (synthetic plus arXiv). The
 headline case is 0.1% of rows passing the filter while sitting far from the
@@ -127,8 +133,24 @@ why it was chosen, and what the rejected plans would have cost.
 
 ## Quickstart
 
-Coming soon: one command to build, load a dataset, run a query, and reproduce
-the benchmarks from a fresh checkout.
+Build and run the tests:
+
+```
+cargo test
+```
+
+Run the recall check on the small SIFT set:
+
+```
+bash scripts/download-datasets.sh siftsmall
+cargo run --release -p loupe-bench -- \
+  datasets/siftsmall/siftsmall_base.fvecs \
+  datasets/siftsmall/siftsmall_query.fvecs \
+  datasets/siftsmall/siftsmall_groundtruth.ivecs
+```
+
+For the full million-vector set, run the download script with `sift` instead of
+`siftsmall`, then point the command at the `sift_*` files.
 
 ---
 

@@ -1,0 +1,9 @@
+[package]
+name = "loupe-bench"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+loupe-distance = { path = "../crates/distance" }
+loupe-storage = { path = "../crates/storage" }
+loupe-hnsw = { path = "../crates/hnsw" }

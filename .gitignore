@@ -1,0 +1,11 @@
+# Private planning docs (local only, not pushed)
+docs-private/
+
+# Rust build output
+/target
+
+# Datasets (downloaded locally)
+datasets/
+
+# macOS
+.DS_Store

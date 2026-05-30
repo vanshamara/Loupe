@@ -5,3 +5,7 @@ version = 4
 [[package]]
 name = "loupe-distance"
 version = "0.1.0"
+
+[[package]]
+name = "loupe-storage"
+version = "0.1.0"

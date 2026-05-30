@@ -1,10 +1,9 @@
 //! HNSW vector index and the exact baseline it is checked against.
 
 mod index;
-mod trace;
 
 pub use index::{HnswConfig, HnswIndex};
-pub use trace::SearchTrace;
+pub use loupe_trace::SearchTrace;
 
 use loupe_distance::Metric;
 use loupe_storage::{StorageAccessor, VectorId};

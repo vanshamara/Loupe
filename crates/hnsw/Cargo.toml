@@ -6,3 +6,4 @@ edition.workspace = true
 [dependencies]
 loupe-distance = { path = "../distance" }
 loupe-storage = { path = "../storage" }
+loupe-trace = { path = "../trace" }

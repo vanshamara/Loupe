@@ -1,0 +1,11 @@
+[package]
+name = "loupe-trace"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+loupe-storage = { path = "../storage" }
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"

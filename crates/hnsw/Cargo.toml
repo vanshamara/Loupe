@@ -1,0 +1,8 @@
+[package]
+name = "loupe-hnsw"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+loupe-distance = { path = "../distance" }
+loupe-storage = { path = "../storage" }

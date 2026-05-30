@@ -1,0 +1,4 @@
+[package]
+name = "loupe-distance"
+version.workspace = true
+edition.workspace = true

@@ -3,9 +3,29 @@ docs-private/
 
 # Rust build output
 /target
+**/*.rs.bk
 
-# Datasets (downloaded locally)
+# Secrets and local environment (never commit these)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# Datasets and large vector files (downloaded locally)
 datasets/
+*.hdf5
+*.fvecs
+*.ivecs
+*.bvecs
+*.npy
 
-# macOS
+# Editor and IDE
+.vscode/
+.idea/
+*.swp
+
+# OS junk
 .DS_Store
+Thumbs.db

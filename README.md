@@ -1,47 +1,49 @@
 # Loupe
 
-**An explainable filtered vector search engine.**
+**A vector search engine that explains its filtered queries.**
 
-> Loupe plans each filtered ANN query, shows the rejected alternatives, and
-> turns query logs into retrieval tuning advice.
+Most vector databases can filter a search. Loupe goes further. It shows why a
+query returned the results it did, what other search plans would have done, and
+what to change when the results are weak.
 
-It answers the questions engineers actually ask about filtered retrieval:
-- *Why did my filtered vector query miss good results?*
-- *Was post-filtering the wrong plan?*
-- *Is this metadata filter anti-correlated with the vector space?*
-- *Would another strategy have returned better results?*
-- *What should I change next?*
+Loupe answers the questions you actually ask when filtered search goes wrong:
+- Why did this query miss good results?
+- Was filtering after the search the wrong call?
+- Do the rows that pass the filter sit far from what the query is looking for?
+- Would a different search plan have done better?
+- What should I change?
 
-Under the hood it's a real engine — disk-backed HNSW in Rust with SIMD distance,
-mmap storage, and a write-ahead log — but the surface you touch is the planner,
-`EXPLAIN SEARCH` (with counterfactuals), the query-log advisor, and replay tooling.
+Loupe is its own engine, not a wrapper around someone else's. The parts you use
+are the planner, `EXPLAIN SEARCH` (with the counterfactual), the advisor that
+reads your query logs, and replay.
 
-> 🚧 **Status: early development.** This README is a living skeleton — sections
-> below fill in as milestones land.
+> Status: early development. This README grows as each milestone lands.
 
 ---
 
 ## Why Loupe?
 
-Real RAG/search is almost never *pure* vector search — it's vector search under
-constraints (`tenant_id`, `doc_type`, `created_at > …`, permissions). HNSW is
-built for graph traversal, and filters break the useful graph path; pre-filter
-and post-filter each fail in different regimes.
+Real search is rarely just vector search. You almost always search with filters:
+a tenant id, a document type, a date range, permissions. HNSW is built to walk a
+graph, and a filter can break the path it wants to take. Filtering before the
+search and filtering after both fall down, just in different cases.
 
-Existing systems *optimize* filtered vector search, but they rarely make the
-planner's reasoning — its **correlation assumptions, recall risk, and the
-counterfactual alternatives** — visible to engineers. **Loupe does.**
+Other systems do filtered search, but they keep the reasoning hidden. They do
+not show you the assumptions they made, the risk to recall, or what the other
+plans would have done. Loupe does.
 
-| | pgvector | Pinecone | Weaviate | **Loupe** |
+| | pgvector | Pinecone | Weaviate | Loupe |
 |---|---|---|---|---|
-| Filtered search | one cost-based path (can misfire at scale) | managed, opaque | HNSW + ACORN (one fixed strategy) | **measures the query, picks among multiple strategies** |
-| Explainability | `EXPLAIN` (SQL-level) | black box | limited | **`EXPLAIN SEARCH` + counterfactual: chosen plan vs alternatives, selectivity, correlation, recall risk** |
-| Hard filters (0.1%, anti-correlated) | recall/latency cliffs | varies | ACORN mitigates | **ACORN-style traversal + adaptive ef, chosen per-query** |
-| Cost | self-hosted | $$ usage-based | self-hosted / cloud | self-hosted, open |
+| Filtered search | one fixed path, can pick wrong at scale | managed, hidden | HNSW plus ACORN, one fixed strategy | measures the query, picks from several strategies |
+| Explainability | SQL `EXPLAIN` only | none | limited | `EXPLAIN SEARCH` plus the counterfactual: chosen plan next to the others |
+| Hard filters (0.1% of rows, pulling away from the query) | recall and speed drop off | varies | ACORN helps | ACORN-style walk plus adaptive search width, picked per query |
+| Cost | self-hosted | paid by usage | self-hosted or cloud | self-hosted, open |
 
-In a line: **Qdrant / Weaviate / Pinecone *optimize* filtered search; Loupe makes it *inspectable, replayable, and tunable*.**
+In one line: Qdrant, Weaviate, and Pinecone do filtered search. Loupe lets you
+inspect it, replay it, and tune it.
 
-*(Decision tree — "when to reach for Loupe vs pgvector/Pinecone" — TODO once benchmarks land.)*
+A short guide on when to pick Loupe over pgvector or Pinecone is coming once the
+benchmarks are in.
 
 ---
 
@@ -50,42 +52,41 @@ In a line: **Qdrant / Weaviate / Pinecone *optimize* filtered search; Loupe make
 ```mermaid
 flowchart TD
     C[gRPC / CLI] --> E[engine: collection API]
-    E --> P[planner: selectivity + correlation est. → strategy]
+    E --> P[planner: estimate selectivity and correlation, pick a strategy]
     P --> S{execution strategy}
-    P --> CF[counterfactual: chosen vs alternatives + planner_regret]
-    S --> H[hnsw: beam search + SearchTrace]
-    E --> F[filter: metadata + roaring bitmaps]
-    H --> D[distance: SIMD L2/dot/cosine]
-    H --> ST[storage: StorageAccessor — in-memory M0 → mmap M7]
-    E --> W[wal: durability + recovery]
-    E --> A[advisor: query logs + stats → recommendations]
-    H --> X[EXPLAIN: SearchTrace → plan + counterfactual + recommendations]
+    P --> CF[counterfactual: chosen plan vs the others, plus planner_regret]
+    S --> H[hnsw: beam search, fills a SearchTrace]
+    E --> F[filter: metadata plus roaring bitmaps]
+    H --> D[distance: SIMD L2 / dot / cosine]
+    H --> ST[storage: in-memory first, mmap later]
+    E --> W[wal: durability and recovery]
+    E --> A[advisor: query logs and stats turn into recommendations]
+    H --> X[EXPLAIN: SearchTrace becomes plan, counterfactual, recommendations]
 ```
 
 ---
 
-## Product surface
+## What you can run
 
-| Command | Question it answers |
+| Command | What it answers |
 |---|---|
-| `loupe explain-search` | *Why this result?* — chosen plan + counterfactual alternatives for one query |
-| `loupe advise` | *What's wrong across my workload?* — recommendations from query logs |
-| `loupe replay` | *Did my change help?* — replay a saved workload, report regret + before/after |
-| `loupe bench` | *How does it compare?* — synthetic (selectivity × correlation) + arXiv workloads → plots |
+| `loupe explain-search` | Why this result? Shows the chosen plan and the alternatives for one query. |
+| `loupe advise` | What is wrong across my workload? Reads query logs and suggests fixes. |
+| `loupe replay` | Did my change help? Replays a saved workload and reports before and after. |
+| `loupe bench` | How does it compare? Runs test workloads and makes plots. |
 
-Plus the **Loupe Graph Explorer** *(optional capstone, M12)* — a 3D web view of a
-single query's traversal path, built on a bounded trace-graph export from
-`ExplainSearch`: watch the chosen plan's walk through the local HNSW subgraph vs.
-the rejected alternatives', with filtered-out and top-k nodes color-coded.
+There is also the Loupe Graph Explorer (optional, M12). It is a 3D web view of
+one query's path. You watch the chosen plan walk the local graph next to the
+plans it rejected, with the filtered-out nodes and the top results color-coded.
 
 ## Under the hood
 
-The observability layer is only meaningful because the engine beneath it is real:
-- **HNSW** index — layered graph + beam search, generic over a storage accessor.
-- **SIMD** distance — NEON on Apple Silicon, AVX2/AVX-512 on x86, with a scalar oracle.
-- **mmap**-backed segments — search a sealed on-disk index with bounded RAM.
-- **Write-ahead log** + checkpointing — crash recovery proven by `kill -9` mid-write.
-- Tombstone deletes + **background compaction**.
+The explaining only means something because the engine under it is real:
+- HNSW index. A layered graph with beam search, built on a storage layer it can swap out.
+- SIMD distance. NEON on Apple Silicon, AVX on x86, with a plain version as a fallback and a check.
+- mmap storage. Search a sealed index on disk without loading all of it into memory.
+- Write-ahead log. Crash recovery you can prove by killing the process mid-write.
+- Deletes plus background compaction.
 
 ---
 
@@ -93,41 +94,41 @@ The observability layer is only meaningful because the engine beneath it is real
 
 | Milestone | Scope | State |
 |---|---|---|
-| M0 | In-memory HNSW + SearchTrace + storage accessor + bench skeleton | ⬜ not started |
+| M0 | In-memory HNSW, SearchTrace, storage accessor, bench skeleton | ⬜ not started |
 | M1 | SIMD distance kernels (NEON / AVX) | ⬜ |
 | M2 | Filtered search: the strategies | ⬜ |
-| M3 | Correlation-aware benchmark matrix + arXiv corpus | ⬜ |
-| M4 | Rule-based planner + EXPLAIN SEARCH (counterfactual + regret) | ⬜ |
-| M5 | Competitor comparison: FAISS / Qdrant / Weaviate / pgvector | ⬜ |
+| M3 | Correlation-aware benchmark matrix plus arXiv corpus | ⬜ |
+| M4 | Rule-based planner plus EXPLAIN SEARCH (counterfactual and regret) | ⬜ |
+| M5 | Comparison vs FAISS / Qdrant / Weaviate / pgvector | ⬜ |
 | M6 | Query-log advisor | ⬜ |
 | M7 | Disk-backed storage (mmap) | ⬜ |
-| M8 | WAL + crash recovery | ⬜ |
-| M9 | gRPC API + CLI (EXPLAIN + advisor) | ⬜ |
-| M10 | Deletes + dead-node-aware search + compaction | ⬜ |
+| M8 | WAL plus crash recovery | ⬜ |
+| M9 | gRPC API and CLI (EXPLAIN plus advisor) | ⬜ |
+| M10 | Deletes, dead-node-aware search, compaction | ⬜ |
 | M11 | Cost-based planner | ⬜ |
-| M11.5 | Polish: DX & observability | ⬜ |
-| M12 | *(optional capstone)* Loupe Graph Explorer — 3D retrieval trace view | ⬜ |
+| M11.5 | Polish: developer experience and metrics | ⬜ |
+| M12 | (optional) Loupe Graph Explorer, 3D trace view | ⬜ |
 
-Legend: ⬜ not started · 🟡 in progress · ✅ done. *(Link PRs/issues here as work lands.)*
+Legend: ⬜ not started · 🟡 in progress · ✅ done. Links to PRs and issues go here as work lands.
 
 ---
 
 ## Results
 
-> TODO (M5): recall/QPS Pareto plots vs FAISS, Qdrant, Weaviate & pgvector, and
-> the filtered selectivity × correlation matrix (synthetic + arXiv). The headline
-> cell is **0.1% selectivity, anti-correlated** — where naive filtering collapses
-> and Loupe's planner earns its keep.
+Coming in M5: recall and speed plots against FAISS, Qdrant, Weaviate, and
+pgvector, across the selectivity and correlation grid (synthetic plus arXiv). The
+headline case is 0.1% of rows passing the filter while sitting far from the
+query, where simple filtering falls apart and the planner pays off.
 
 ## EXPLAIN demo
 
-> TODO (M4): `loupe explain-search` on a nasty filter, showing the chosen plan,
-> *why*, and the **counterfactual** (what the rejected alternatives would have cost).
+Coming in M4: `loupe explain-search` on a hard filter, showing the chosen plan,
+why it was chosen, and what the rejected plans would have cost.
 
-## Quickstart / Reproduce
+## Quickstart
 
-> TODO: one-command path to build, load a dataset, query, and reproduce the
-> benchmarks from a clean checkout.
+Coming soon: one command to build, load a dataset, run a query, and reproduce
+the benchmarks from a fresh checkout.
 
 ---
 

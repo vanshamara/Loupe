@@ -3,8 +3,79 @@ use std::collections::{BinaryHeap, HashSet};
 
 use loupe_distance::Metric;
 use loupe_storage::{InMemoryVectorStore, StorageAccessor, VectorId};
+use loupe_trace::{
+    NodeStatus, TRACE_EXPORT_VERSION, TraceEdge, TraceGraphExport, TraceGraphLimits, TraceNode,
+};
 
 use crate::{Neighbor, SearchTrace};
+
+/// Collects the local subgraph a search walks through, for the gated diagnostic
+/// export. It enforces hard caps so it can never grow without bound, and it holds
+/// only node ids and edges, never vectors.
+struct GraphCollector {
+    limits: TraceGraphLimits,
+    nodes: Vec<VectorId>,
+    seen: HashSet<VectorId>,
+    edges: Vec<(VectorId, VectorId)>,
+    truncated: bool,
+}
+
+impl GraphCollector {
+    fn new(limits: TraceGraphLimits) -> Self {
+        Self {
+            limits,
+            nodes: Vec::new(),
+            seen: HashSet::new(),
+            edges: Vec::new(),
+            truncated: false,
+        }
+    }
+
+    fn record_node(&mut self, id: VectorId) {
+        if !self.seen.insert(id) {
+            return;
+        }
+        if self.nodes.len() < self.limits.max_nodes {
+            self.nodes.push(id);
+        } else {
+            self.truncated = true;
+        }
+    }
+
+    fn record_edge(&mut self, from: VectorId, to: VectorId) {
+        if self.edges.len() < self.limits.max_edges {
+            self.edges.push((from, to));
+        } else {
+            self.truncated = true;
+        }
+    }
+
+    fn into_export(self, returned: &HashSet<VectorId>) -> TraceGraphExport {
+        let nodes = self
+            .nodes
+            .iter()
+            .map(|&id| TraceNode {
+                id,
+                status: if returned.contains(&id) {
+                    NodeStatus::Returned
+                } else {
+                    NodeStatus::Visited
+                },
+            })
+            .collect();
+        let edges = self
+            .edges
+            .iter()
+            .map(|&(from, to)| TraceEdge { from, to })
+            .collect();
+        TraceGraphExport {
+            version: TRACE_EXPORT_VERSION,
+            nodes,
+            edges,
+            truncated: self.truncated,
+        }
+    }
+}
 
 /// Knobs that control index quality and speed.
 ///
@@ -167,6 +238,7 @@ impl HnswIndex {
                 self.config.ef_construction,
                 layer,
                 &mut trace,
+                &mut None,
             );
             let selected = self.select_neighbors(&found, self.config.m);
             self.neighbors[id as usize][layer] = selected.clone();
@@ -207,7 +279,7 @@ impl HnswIndex {
         }
 
         let ef = self.config.ef_search.max(k);
-        let mut found = self.search_layer(query, entry_point, ef, 0, &mut trace);
+        let mut found = self.search_layer(query, entry_point, ef, 0, &mut trace, &mut None);
         found.truncate(k);
 
         let neighbors = found
@@ -218,6 +290,55 @@ impl HnswIndex {
             })
             .collect();
         (neighbors, trace)
+    }
+
+    /// Like `search`, but also returns a bounded export of the local graph the
+    /// search walked: the visited nodes, which were returned, and the edges
+    /// between them. This runs only when asked, never on a normal query.
+    pub fn explain_search(
+        &self,
+        query: &[f32],
+        k: usize,
+        limits: TraceGraphLimits,
+    ) -> (Vec<Neighbor>, SearchTrace, TraceGraphExport) {
+        let mut trace = SearchTrace::default();
+        let entry = match self.entry_point {
+            Some(e) => e,
+            None => {
+                let empty = TraceGraphExport {
+                    version: TRACE_EXPORT_VERSION,
+                    nodes: Vec::new(),
+                    edges: Vec::new(),
+                    truncated: false,
+                };
+                return (Vec::new(), trace, empty);
+            }
+        };
+
+        let mut entry_point = entry;
+        let mut layer = self.max_level;
+        while layer > 0 {
+            entry_point = self.closest_on_layer(query, entry_point, layer, &mut trace);
+            layer -= 1;
+        }
+
+        let ef = self.config.ef_search.max(k);
+        let mut collector = Some(GraphCollector::new(limits));
+        let mut found = self.search_layer(query, entry_point, ef, 0, &mut trace, &mut collector);
+        found.truncate(k);
+
+        let neighbors: Vec<Neighbor> = found
+            .into_iter()
+            .map(|c| Neighbor {
+                id: c.id,
+                distance: c.distance,
+            })
+            .collect();
+        let returned: HashSet<VectorId> = neighbors.iter().map(|n| n.id).collect();
+        let export = collector
+            .expect("collector was set above")
+            .into_export(&returned);
+        (neighbors, trace, export)
     }
 
     fn random_level(&mut self) -> usize {
@@ -245,7 +366,7 @@ impl HnswIndex {
         layer: usize,
         trace: &mut SearchTrace,
     ) -> VectorId {
-        self.search_layer(query, entry, 1, layer, trace)
+        self.search_layer(query, entry, 1, layer, trace, &mut None)
             .first()
             .map_or(entry, |c| c.id)
     }
@@ -257,6 +378,7 @@ impl HnswIndex {
         ef: usize,
         layer: usize,
         trace: &mut SearchTrace,
+        collector: &mut Option<GraphCollector>,
     ) -> Vec<Candidate> {
         let mut visited = HashSet::new();
         let mut to_explore = BinaryHeap::new();
@@ -265,6 +387,9 @@ impl HnswIndex {
         let entry_distance = self.distance(query, entry, trace);
         visited.insert(entry);
         trace.nodes_visited += 1;
+        if let Some(graph) = collector.as_mut() {
+            graph.record_node(entry);
+        }
         let start = Candidate {
             distance: entry_distance,
             id: entry,
@@ -285,6 +410,10 @@ impl HnswIndex {
                     continue;
                 }
                 trace.nodes_visited += 1;
+                if let Some(graph) = collector.as_mut() {
+                    graph.record_node(neighbor);
+                    graph.record_edge(current.id, neighbor);
+                }
                 let distance = self.distance(query, neighbor, trace);
                 let room_left = results.len() < ef;
                 let better_than_worst = results.peek().is_some_and(|w| distance < w.distance);
@@ -436,5 +565,69 @@ mod tests {
 
         let recall = hits as f32 / total as f32;
         assert!(recall >= 0.9, "recall too low: {recall}");
+    }
+
+    #[test]
+    fn explain_search_matches_plain_search() {
+        let mut index = HnswIndex::new(2, Metric::L2, HnswConfig::default());
+        for i in 0..50 {
+            let f = i as f32;
+            index.insert(&[f, f]);
+        }
+        let (plain, _) = index.search(&[3.0, 3.0], 5);
+        let (explained, _, _) = index.explain_search(&[3.0, 3.0], 5, TraceGraphLimits::default());
+        let plain_ids: Vec<VectorId> = plain.iter().map(|n| n.id).collect();
+        let explained_ids: Vec<VectorId> = explained.iter().map(|n| n.id).collect();
+        assert_eq!(plain_ids, explained_ids);
+    }
+
+    #[test]
+    fn explain_search_marks_returned_nodes() {
+        let mut index = HnswIndex::new(2, Metric::L2, HnswConfig::default());
+        for i in 0..50 {
+            let f = i as f32;
+            index.insert(&[f, f]);
+        }
+        let (neighbors, _, export) =
+            index.explain_search(&[3.0, 3.0], 5, TraceGraphLimits::default());
+        assert_eq!(export.version, 1);
+        assert!(!export.nodes.is_empty());
+        assert!(!export.edges.is_empty());
+        let returned: Vec<VectorId> = export
+            .nodes
+            .iter()
+            .filter(|n| n.status == NodeStatus::Returned)
+            .map(|n| n.id)
+            .collect();
+        for neighbor in &neighbors {
+            assert!(returned.contains(&neighbor.id));
+        }
+    }
+
+    #[test]
+    fn explain_search_respects_limits() {
+        let mut index = HnswIndex::new(2, Metric::L2, HnswConfig::default());
+        for i in 0..200 {
+            let f = i as f32;
+            index.insert(&[f, f]);
+        }
+        let limits = TraceGraphLimits {
+            max_nodes: 5,
+            max_edges: 5,
+        };
+        let (_, _, export) = index.explain_search(&[3.0, 3.0], 10, limits);
+        assert!(export.nodes.len() <= 5);
+        assert!(export.edges.len() <= 5);
+        assert!(export.truncated);
+    }
+
+    #[test]
+    fn explain_search_on_empty_index_is_empty() {
+        let index = HnswIndex::new(2, Metric::L2, HnswConfig::default());
+        let (neighbors, _, export) =
+            index.explain_search(&[1.0, 1.0], 5, TraceGraphLimits::default());
+        assert!(neighbors.is_empty());
+        assert!(export.nodes.is_empty());
+        assert!(export.edges.is_empty());
     }
 }

@@ -94,7 +94,7 @@ The explaining only means something because the engine under it is real:
 
 | Milestone | Scope | State |
 |---|---|---|
-| M0 | In-memory HNSW, SearchTrace, storage accessor, bench skeleton | 🟡 in progress |
+| M0 | In-memory HNSW, SearchTrace, storage accessor, bench skeleton | ✅ done |
 | M1 | SIMD distance kernels (NEON / AVX) | ⬜ |
 | M2 | Filtered search: the strategies | ⬜ |
 | M3 | Correlation-aware benchmark matrix plus arXiv corpus | ⬜ |

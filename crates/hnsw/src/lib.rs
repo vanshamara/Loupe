@@ -3,7 +3,7 @@
 mod index;
 
 pub use index::{HnswConfig, HnswIndex};
-pub use loupe_trace::SearchTrace;
+pub use loupe_trace::{SearchTrace, TraceGraphExport, TraceGraphLimits};
 
 use loupe_distance::Metric;
 use loupe_storage::{StorageAccessor, VectorId};

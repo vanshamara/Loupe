@@ -1,0 +1,8 @@
+[package]
+name = "loupe-filter"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+loupe-storage = { path = "../storage" }
+roaring = "0.10"

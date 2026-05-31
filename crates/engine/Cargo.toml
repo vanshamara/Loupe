@@ -1,0 +1,13 @@
+[package]
+name = "loupe-engine"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+loupe-distance = { path = "../distance" }
+loupe-storage = { path = "../storage" }
+loupe-trace = { path = "../trace" }
+loupe-filter = { path = "../filter" }
+loupe-planner = { path = "../planner" }
+loupe-hnsw = { path = "../hnsw" }
+roaring = "0.10"

@@ -221,6 +221,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "loupe-engine"
+version = "0.1.0"
+dependencies = [
+ "loupe-distance",
+ "loupe-filter",
+ "loupe-hnsw",
+ "loupe-planner",
+ "loupe-storage",
+ "loupe-trace",
+ "roaring",
+]
+
+[[package]]
 name = "loupe-filter"
 version = "0.1.0"
 dependencies = [

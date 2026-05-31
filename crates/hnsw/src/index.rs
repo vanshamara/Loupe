@@ -214,6 +214,17 @@ impl HnswIndex {
         self.max_level
     }
 
+    /// Read access to the stored vectors, for code that needs distances outside
+    /// the index (such as the planner's correlation estimate).
+    pub fn accessor(&self) -> &impl StorageAccessor {
+        &self.store
+    }
+
+    /// The metric this index was built with.
+    pub fn metric(&self) -> Metric {
+        self.metric
+    }
+
     /// Adds a vector to the index and returns its id. It gives the node a random
     /// level, walks down the upper layers to a good entry point, then links it to
     /// nearby nodes on each layer it belongs to.

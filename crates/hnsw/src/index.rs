@@ -3,6 +3,8 @@ use std::collections::{BinaryHeap, HashSet};
 
 use loupe_distance::Metric;
 use loupe_storage::{InMemoryVectorStore, StorageAccessor, VectorId};
+use roaring::RoaringBitmap;
+
 use loupe_trace::{
     NodeStatus, TRACE_EXPORT_VERSION, TraceEdge, TraceGraphExport, TraceGraphLimits, TraceNode,
 };
@@ -341,6 +343,65 @@ impl HnswIndex {
         (neighbors, trace, export)
     }
 
+    /// Exact filtered search. Scans only the ids that pass the filter and returns
+    /// the true top-k among them. Best when few ids match the filter.
+    pub fn flat_filtered_search(
+        &self,
+        query: &[f32],
+        k: usize,
+        allowed: &RoaringBitmap,
+    ) -> (Vec<Neighbor>, SearchTrace) {
+        let mut trace = SearchTrace::default();
+        let mut results: Vec<Neighbor> = allowed
+            .iter()
+            .map(|id| {
+                trace.distance_computations += 1;
+                trace.nodes_visited += 1;
+                Neighbor {
+                    id,
+                    distance: self.metric.distance(query, self.store.vector(id)),
+                }
+            })
+            .collect();
+        results.sort_by(|a, b| a.distance.total_cmp(&b.distance));
+        results.truncate(k);
+        (results, trace)
+    }
+
+    /// Post-filter search. Runs a normal search with a wider beam, then drops the
+    /// ids that do not pass the filter. Best when the filter is broad.
+    pub fn post_filter_search(
+        &self,
+        query: &[f32],
+        k: usize,
+        allowed: &RoaringBitmap,
+        ef: usize,
+    ) -> (Vec<Neighbor>, SearchTrace) {
+        let mut trace = SearchTrace::default();
+        let entry = match self.entry_point {
+            Some(e) => e,
+            None => return (Vec::new(), trace),
+        };
+        let mut entry_point = entry;
+        let mut layer = self.max_level;
+        while layer > 0 {
+            entry_point = self.closest_on_layer(query, entry_point, layer, &mut trace);
+            layer -= 1;
+        }
+        let beam = ef.max(k);
+        let found = self.search_layer(query, entry_point, beam, 0, &mut trace, &mut None);
+        let mut results: Vec<Neighbor> = found
+            .into_iter()
+            .filter(|candidate| allowed.contains(candidate.id))
+            .map(|candidate| Neighbor {
+                id: candidate.id,
+                distance: candidate.distance,
+            })
+            .collect();
+        results.truncate(k);
+        (results, trace)
+    }
+
     fn random_level(&mut self) -> usize {
         let uniform = self.rng.next_f32().max(f32::MIN_POSITIVE);
         (-uniform.ln() * self.level_multiplier).floor() as usize
@@ -629,5 +690,64 @@ mod tests {
         assert!(neighbors.is_empty());
         assert!(export.nodes.is_empty());
         assert!(export.edges.is_empty());
+    }
+
+    fn line_index(count: u32) -> HnswIndex {
+        let mut index = HnswIndex::new(2, Metric::L2, HnswConfig::default());
+        for i in 0..count {
+            let f = i as f32;
+            index.insert(&[f, f]);
+        }
+        index
+    }
+
+    fn even_ids(count: u32) -> RoaringBitmap {
+        let mut allowed = RoaringBitmap::new();
+        for id in (0..count).step_by(2) {
+            allowed.insert(id);
+        }
+        allowed
+    }
+
+    #[test]
+    fn flat_filtered_returns_exact_among_allowed() {
+        let index = line_index(10);
+        let mut allowed = RoaringBitmap::new();
+        allowed.insert(2);
+        allowed.insert(5);
+        allowed.insert(8);
+        let (results, _) = index.flat_filtered_search(&[5.1, 5.1], 2, &allowed);
+        assert_eq!(results[0].id, 5);
+        assert_eq!(results[1].id, 8);
+    }
+
+    #[test]
+    fn flat_filtered_empty_allowed_is_empty() {
+        let index = line_index(5);
+        let (results, _) = index.flat_filtered_search(&[0.0, 0.0], 5, &RoaringBitmap::new());
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn post_filter_only_returns_allowed() {
+        let index = line_index(100);
+        let allowed = even_ids(100);
+        let (results, _) = index.post_filter_search(&[40.0, 40.0], 5, &allowed, 100);
+        assert!(!results.is_empty());
+        for neighbor in &results {
+            assert!(allowed.contains(neighbor.id));
+        }
+    }
+
+    #[test]
+    fn post_filter_matches_exact_for_broad_filter() {
+        let index = line_index(100);
+        let allowed = even_ids(100);
+        let query = [41.3, 41.3];
+        let (post, _) = index.post_filter_search(&query, 5, &allowed, 100);
+        let (flat, _) = index.flat_filtered_search(&query, 5, &allowed);
+        let post_ids: Vec<VectorId> = post.iter().map(|n| n.id).collect();
+        let flat_ids: Vec<VectorId> = flat.iter().map(|n| n.id).collect();
+        assert_eq!(post_ids, flat_ids);
     }
 }

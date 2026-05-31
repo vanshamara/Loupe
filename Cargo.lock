@@ -231,6 +231,7 @@ dependencies = [
  "loupe-distance",
  "loupe-storage",
  "loupe-trace",
+ "roaring",
 ]
 
 [[package]]

@@ -7,3 +7,4 @@ edition.workspace = true
 loupe-distance = { path = "../distance" }
 loupe-storage = { path = "../storage" }
 loupe-trace = { path = "../trace" }
+roaring = "0.10"

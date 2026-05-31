@@ -159,6 +159,14 @@ impl Ord for Candidate {
     }
 }
 
+/// Which filtered search strategy the adaptive overlay should run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FilteredStrategy {
+    PostFilter,
+    InTraversal,
+    Acorn,
+}
+
 /// A multi-layer HNSW index built on top of an in-memory vector store. Each node
 /// sits in layer 0 and, with falling probability, in higher layers that act as
 /// express lanes for search. Vectors are read through the storage accessor, so
@@ -533,6 +541,50 @@ impl HnswIndex {
         let mut out = results.into_vec();
         out.sort();
         out
+    }
+
+    /// Runs a filtered strategy and widens the beam if it comes back with fewer
+    /// than k matches, retrying until it has enough, runs out of matches, or hits
+    /// the beam cap. The returned trace sums the work across every attempt.
+    pub fn adaptive_filtered_search(
+        &self,
+        query: &[f32],
+        k: usize,
+        allowed: &RoaringBitmap,
+        strategy: FilteredStrategy,
+        ef: usize,
+        max_ef: usize,
+    ) -> (Vec<Neighbor>, SearchTrace) {
+        let mut current_ef = ef.max(k);
+        let cap = max_ef.max(current_ef);
+        let mut total = SearchTrace::default();
+        loop {
+            let (results, attempt) = self.run_filtered(strategy, query, k, allowed, current_ef);
+            total.distance_computations += attempt.distance_computations;
+            total.nodes_visited += attempt.nodes_visited;
+            if results.len() >= k || current_ef >= cap {
+                return (results, total);
+            }
+            current_ef = (current_ef * 2).min(cap);
+            total.ef_expansions += 1;
+        }
+    }
+
+    fn run_filtered(
+        &self,
+        strategy: FilteredStrategy,
+        query: &[f32],
+        k: usize,
+        allowed: &RoaringBitmap,
+        ef: usize,
+    ) -> (Vec<Neighbor>, SearchTrace) {
+        match strategy {
+            FilteredStrategy::PostFilter => self.post_filter_search(query, k, allowed, ef),
+            FilteredStrategy::InTraversal => {
+                self.in_traversal_filtered_search(query, k, allowed, ef)
+            }
+            FilteredStrategy::Acorn => self.acorn_filtered_search(query, k, allowed, ef),
+        }
     }
 
     fn random_level(&mut self) -> usize {
@@ -933,5 +985,57 @@ mod tests {
         for neighbor in in_traversal.iter().chain(acorn.iter()) {
             assert!(allowed.contains(neighbor.id));
         }
+    }
+
+    #[test]
+    fn adaptive_widens_to_fill_k() {
+        let index = line_index(200);
+        let allowed = even_ids(200);
+        let (results, trace) = index.adaptive_filtered_search(
+            &[80.0, 80.0],
+            10,
+            &allowed,
+            FilteredStrategy::PostFilter,
+            10,
+            512,
+        );
+        assert_eq!(results.len(), 10);
+        assert!(trace.ef_expansions >= 1);
+        for neighbor in &results {
+            assert!(allowed.contains(neighbor.id));
+        }
+    }
+
+    #[test]
+    fn adaptive_skips_widening_when_initial_beam_suffices() {
+        let index = line_index(200);
+        let allowed = even_ids(200);
+        let (results, trace) = index.adaptive_filtered_search(
+            &[80.0, 80.0],
+            5,
+            &allowed,
+            FilteredStrategy::Acorn,
+            256,
+            512,
+        );
+        assert_eq!(results.len(), 5);
+        assert_eq!(trace.ef_expansions, 0);
+    }
+
+    #[test]
+    fn adaptive_terminates_when_matches_fewer_than_k() {
+        let index = line_index(100);
+        let mut allowed = RoaringBitmap::new();
+        allowed.insert(10);
+        allowed.insert(20);
+        let (results, _) = index.adaptive_filtered_search(
+            &[15.0, 15.0],
+            5,
+            &allowed,
+            FilteredStrategy::InTraversal,
+            8,
+            256,
+        );
+        assert_eq!(results.len(), 2);
     }
 }

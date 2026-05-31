@@ -2,7 +2,7 @@
 
 mod index;
 
-pub use index::{HnswConfig, HnswIndex};
+pub use index::{FilteredStrategy, HnswConfig, HnswIndex};
 pub use loupe_trace::{SearchTrace, TraceGraphExport, TraceGraphLimits};
 
 use loupe_distance::Metric;

@@ -96,7 +96,7 @@ The explaining only means something because the engine under it is real:
 |---|---|---|
 | M0 | In-memory HNSW, SearchTrace, storage accessor, bench skeleton | ✅ done |
 | M1 | SIMD distance kernels (NEON / AVX) | ✅ done |
-| M2 | Filtered search: the strategies | ⬜ |
+| M2 | Filtered search: the strategies | ✅ done |
 | M3 | Correlation-aware benchmark matrix plus arXiv corpus | ⬜ |
 | M4 | Rule-based planner plus EXPLAIN SEARCH (counterfactual and regret) | ⬜ |
 | M5 | Comparison vs FAISS / Qdrant / Weaviate / pgvector | ⬜ |

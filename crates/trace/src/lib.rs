@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 pub struct SearchTrace {
     pub distance_computations: u64,
     pub nodes_visited: u64,
+    pub ef_expansions: u32,
 }
 
 /// One line of the query log, written per query. The first fields are filled in
@@ -89,9 +90,13 @@ mod tests {
         let metrics = SearchTrace {
             distance_computations: 660,
             nodes_visited: 712,
+            ef_expansions: 2,
         };
         let json = serde_json::to_string(&metrics).unwrap();
-        assert_eq!(json, r#"{"distance_computations":660,"nodes_visited":712}"#);
+        assert_eq!(
+            json,
+            r#"{"distance_computations":660,"nodes_visited":712,"ef_expansions":2}"#
+        );
     }
 
     #[test]
@@ -104,13 +109,14 @@ mod tests {
             metrics: SearchTrace {
                 distance_computations: 660,
                 nodes_visited: 712,
+                ef_expansions: 0,
             },
             filter: None,
             plan: None,
             recall_smoke: None,
         };
         let json = serde_json::to_string(&record).unwrap();
-        let expected = r#"{"query_id":1,"k":10,"latency_micros":1234,"returned":[5,9],"metrics":{"distance_computations":660,"nodes_visited":712},"filter":null,"plan":null,"recall_smoke":null}"#;
+        let expected = r#"{"query_id":1,"k":10,"latency_micros":1234,"returned":[5,9],"metrics":{"distance_computations":660,"nodes_visited":712,"ef_expansions":0},"filter":null,"plan":null,"recall_smoke":null}"#;
         assert_eq!(json, expected);
     }
 

@@ -402,6 +402,139 @@ impl HnswIndex {
         (results, trace)
     }
 
+    /// In-traversal filtered search. Walks the graph normally but only admits
+    /// matching ids into the result set. It still moves through non-matching nodes
+    /// that look promising, so it bridges short gaps in the matching subset.
+    pub fn in_traversal_filtered_search(
+        &self,
+        query: &[f32],
+        k: usize,
+        allowed: &RoaringBitmap,
+        ef: usize,
+    ) -> (Vec<Neighbor>, SearchTrace) {
+        self.filtered_search(query, k, allowed, ef, false)
+    }
+
+    /// ACORN-style filtered search. Like in-traversal, but it also looks one hop
+    /// past non-matching neighbors, using them as bridges. This keeps the matching
+    /// subset reachable when a strict filter leaves few direct matching neighbors.
+    pub fn acorn_filtered_search(
+        &self,
+        query: &[f32],
+        k: usize,
+        allowed: &RoaringBitmap,
+        ef: usize,
+    ) -> (Vec<Neighbor>, SearchTrace) {
+        self.filtered_search(query, k, allowed, ef, true)
+    }
+
+    fn filtered_search(
+        &self,
+        query: &[f32],
+        k: usize,
+        allowed: &RoaringBitmap,
+        ef: usize,
+        expand: bool,
+    ) -> (Vec<Neighbor>, SearchTrace) {
+        let mut trace = SearchTrace::default();
+        let entry = match self.entry_point {
+            Some(e) => e,
+            None => return (Vec::new(), trace),
+        };
+
+        let mut entry_point = entry;
+        let mut layer = self.max_level;
+        while layer > 0 {
+            entry_point = self.closest_on_layer(query, entry_point, layer, &mut trace);
+            layer -= 1;
+        }
+
+        let beam = ef.max(k);
+        let mut found =
+            self.filtered_search_layer(query, entry_point, beam, allowed, expand, &mut trace);
+        found.truncate(k);
+
+        let neighbors = found
+            .into_iter()
+            .map(|c| Neighbor {
+                id: c.id,
+                distance: c.distance,
+            })
+            .collect();
+        (neighbors, trace)
+    }
+
+    fn filtered_search_layer(
+        &self,
+        query: &[f32],
+        entry: VectorId,
+        ef: usize,
+        allowed: &RoaringBitmap,
+        expand: bool,
+        trace: &mut SearchTrace,
+    ) -> Vec<Candidate> {
+        let layer = 0;
+        let mut visited = HashSet::new();
+        let mut to_explore = BinaryHeap::new();
+        let mut results: BinaryHeap<Candidate> = BinaryHeap::new();
+
+        let entry_distance = self.distance(query, entry, trace);
+        visited.insert(entry);
+        trace.nodes_visited += 1;
+        let start = Candidate {
+            distance: entry_distance,
+            id: entry,
+        };
+        to_explore.push(Reverse(start));
+        if allowed.contains(entry) {
+            results.push(start);
+        }
+
+        while let Some(Reverse(current)) = to_explore.pop() {
+            if results.len() >= ef
+                && results
+                    .peek()
+                    .is_some_and(|w| current.distance > w.distance)
+            {
+                break;
+            }
+
+            let mut to_consider = self.neighbors[current.id as usize][layer].clone();
+            if expand {
+                let bridges: Vec<VectorId> = self.neighbors[current.id as usize][layer]
+                    .iter()
+                    .filter(|&&neighbor| !allowed.contains(neighbor))
+                    .flat_map(|&neighbor| self.neighbors[neighbor as usize][layer].iter().copied())
+                    .collect();
+                to_consider.extend(bridges);
+            }
+
+            for node in to_consider {
+                if !visited.insert(node) {
+                    continue;
+                }
+                trace.nodes_visited += 1;
+                let distance = self.distance(query, node, trace);
+                let qualifies =
+                    results.len() < ef || results.peek().is_some_and(|w| distance < w.distance);
+                if qualifies {
+                    let candidate = Candidate { distance, id: node };
+                    to_explore.push(Reverse(candidate));
+                    if allowed.contains(node) {
+                        results.push(candidate);
+                        if results.len() > ef {
+                            results.pop();
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut out = results.into_vec();
+        out.sort();
+        out
+    }
+
     fn random_level(&mut self) -> usize {
         let uniform = self.rng.next_f32().max(f32::MIN_POSITIVE);
         (-uniform.ln() * self.level_multiplier).floor() as usize
@@ -749,5 +882,56 @@ mod tests {
         let post_ids: Vec<VectorId> = post.iter().map(|n| n.id).collect();
         let flat_ids: Vec<VectorId> = flat.iter().map(|n| n.id).collect();
         assert_eq!(post_ids, flat_ids);
+    }
+
+    fn result_ids(results: &[Neighbor]) -> Vec<VectorId> {
+        results.iter().map(|n| n.id).collect()
+    }
+
+    #[test]
+    fn in_traversal_matches_exact_for_broad_filter() {
+        let index = line_index(100);
+        let allowed = even_ids(100);
+        let query = [41.3, 41.3];
+        let (got, _) = index.in_traversal_filtered_search(&query, 5, &allowed, 100);
+        let (flat, _) = index.flat_filtered_search(&query, 5, &allowed);
+        assert_eq!(result_ids(&got), result_ids(&flat));
+    }
+
+    #[test]
+    fn acorn_matches_exact_for_broad_filter() {
+        let index = line_index(100);
+        let allowed = even_ids(100);
+        let query = [41.3, 41.3];
+        let (got, _) = index.acorn_filtered_search(&query, 5, &allowed, 100);
+        let (flat, _) = index.flat_filtered_search(&query, 5, &allowed);
+        assert_eq!(result_ids(&got), result_ids(&flat));
+    }
+
+    #[test]
+    fn filtered_strategies_find_sparse_matches() {
+        let index = line_index(200);
+        let mut allowed = RoaringBitmap::new();
+        allowed.insert(10);
+        allowed.insert(150);
+        allowed.insert(190);
+        let query = [150.0, 150.0];
+        let (flat, _) = index.flat_filtered_search(&query, 3, &allowed);
+        let (in_traversal, _) = index.in_traversal_filtered_search(&query, 3, &allowed, 64);
+        let (acorn, _) = index.acorn_filtered_search(&query, 3, &allowed, 64);
+        assert_eq!(result_ids(&in_traversal), result_ids(&flat));
+        assert_eq!(result_ids(&acorn), result_ids(&flat));
+    }
+
+    #[test]
+    fn filtered_strategies_return_only_allowed() {
+        let index = line_index(100);
+        let allowed = even_ids(100);
+        let query = [55.0, 55.0];
+        let (in_traversal, _) = index.in_traversal_filtered_search(&query, 5, &allowed, 64);
+        let (acorn, _) = index.acorn_filtered_search(&query, 5, &allowed, 64);
+        for neighbor in in_traversal.iter().chain(acorn.iter()) {
+            assert!(allowed.contains(neighbor.id));
+        }
     }
 }

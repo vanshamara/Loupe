@@ -1,7 +1,9 @@
 use std::env;
 use std::time::Instant;
 
-use loupe_bench::matrix::{MatrixConfig, print_matrix, run_matrix};
+use loupe_bench::matrix::{
+    MatrixConfig, print_matrix, print_planner_summary, run_matrix, summarize_planner,
+};
 use loupe_bench::{read_fvecs, read_ivecs, recall_at_k};
 use loupe_distance::Metric;
 use loupe_hnsw::{HnswConfig, HnswIndex, brute_force_search};
@@ -61,6 +63,20 @@ fn main() {
     };
     let cells = run_matrix(&l2_index, &base, &queries, Metric::L2, &matrix_config);
     print_matrix(&cells);
+
+    println!();
+    println!("=== planner vs fixed strategies (over all cells) ===");
+    let planner = loupe_planner::PlannerConfig::default();
+    let summary = summarize_planner(
+        &l2_index,
+        &base,
+        &queries,
+        Metric::L2,
+        &matrix_config,
+        &planner,
+        32,
+    );
+    print_planner_summary(&summary);
 }
 
 fn build_index(base: &[Vec<f32>], dim: usize, metric: Metric) -> HnswIndex {

@@ -6,6 +6,10 @@ use std::collections::HashSet;
 use loupe_distance::Metric;
 use loupe_filter::{Expr, MetadataStore};
 use loupe_hnsw::{FilteredStrategy, HnswIndex, Neighbor, SearchTrace};
+use loupe_planner::{
+    PlannedStrategy, PlannerConfig, QueryShape, choose_plan, classify_correlation,
+    estimate_correlation,
+};
 
 use crate::filters::{CORRELATION_MODES, Correlation, SELECTIVITY_LEVELS, generate_filter};
 
@@ -229,6 +233,158 @@ pub fn print_filter_matrix(results: &[FilterResult]) {
     }
 }
 
+/// Mean recall and cost for one strategy across the whole matrix.
+#[derive(Clone, Debug)]
+pub struct StrategySummary {
+    pub name: String,
+    pub mean_recall: f32,
+    pub mean_distance_computations: f64,
+}
+
+/// The planner compared against the fixed strategies over the whole matrix, plus
+/// the planner's regret: how often its pick was beaten on both recall and cost.
+#[derive(Clone, Debug)]
+pub struct PlannerSummary {
+    pub strategies: Vec<StrategySummary>,
+    pub regret: f32,
+}
+
+/// Runs the planner and the four fixed strategies over every cell, then reports
+/// each one's mean recall and cost and the planner's regret. Regret counts the
+/// queries where some fixed strategy matched or beat the planner's recall at no
+/// more cost (and was strictly better on one) — i.e. the planner missed the
+/// recall/cost frontier.
+pub fn summarize_planner(
+    index: &HnswIndex,
+    base: &[Vec<f32>],
+    queries: &[Vec<f32>],
+    metric: Metric,
+    matrix: &MatrixConfig,
+    planner: &PlannerConfig,
+    samples: usize,
+) -> PlannerSummary {
+    let fixed = [
+        Strategy::Flat,
+        Strategy::PostFilter,
+        Strategy::InTraversal,
+        Strategy::Acorn,
+    ];
+    let mut recall_sum = [0.0f64; 5];
+    let mut comps_sum = [0.0f64; 5];
+    let mut regretted = 0usize;
+    let mut total = 0usize;
+
+    for &selectivity in &SELECTIVITY_LEVELS {
+        for &correlation in &CORRELATION_MODES {
+            for query in queries {
+                let allowed =
+                    generate_filter(base, query, metric, selectivity, correlation, matrix.seed);
+                let (oracle, _) = index.flat_filtered_search(query, matrix.k, &allowed);
+                let oracle_ids: HashSet<u32> = oracle.iter().map(|n| n.id).collect();
+
+                let mut fixed_outcomes = Vec::with_capacity(fixed.len());
+                for (slot, &strategy) in fixed.iter().enumerate() {
+                    let (results, trace) = run_strategy(index, strategy, query, &allowed, matrix);
+                    let recall = overlap(&results, &oracle_ids);
+                    recall_sum[slot] += f64::from(recall);
+                    comps_sum[slot] += trace.distance_computations as f64;
+                    fixed_outcomes.push((recall, trace.distance_computations));
+                }
+
+                let (planner_comps, planner_recall) = run_planner(
+                    index,
+                    query,
+                    &allowed,
+                    matrix,
+                    planner,
+                    samples,
+                    &oracle_ids,
+                );
+                recall_sum[4] += f64::from(planner_recall);
+                comps_sum[4] += planner_comps as f64;
+
+                let dominated = fixed_outcomes.iter().any(|&(recall, comps)| {
+                    recall >= planner_recall
+                        && comps <= planner_comps
+                        && (recall > planner_recall || comps < planner_comps)
+                });
+                if dominated {
+                    regretted += 1;
+                }
+                total += 1;
+            }
+        }
+    }
+
+    let total_f = total.max(1) as f64;
+    let names = ["Flat", "PostFilter", "InTraversal", "Acorn", "Planner"];
+    let strategies = names
+        .iter()
+        .zip(recall_sum.iter())
+        .zip(comps_sum.iter())
+        .map(|((name, &recall), &comps)| StrategySummary {
+            name: (*name).to_string(),
+            mean_recall: (recall / total_f) as f32,
+            mean_distance_computations: comps / total_f,
+        })
+        .collect();
+
+    PlannerSummary {
+        strategies,
+        regret: (regretted as f64 / total_f) as f32,
+    }
+}
+
+fn run_planner(
+    index: &HnswIndex,
+    query: &[f32],
+    allowed: &roaring::RoaringBitmap,
+    matrix: &MatrixConfig,
+    planner: &PlannerConfig,
+    samples: usize,
+    oracle_ids: &HashSet<u32>,
+) -> (u64, f32) {
+    let score = estimate_correlation(
+        index.accessor(),
+        index.metric(),
+        query,
+        allowed,
+        samples,
+        matrix.seed,
+    );
+    let shape = QueryShape {
+        total: index.len(),
+        matching_count: allowed.len() as usize,
+        k: matrix.k,
+        correlation: classify_correlation(score, planner.correlation_band),
+    };
+    let plan = choose_plan(&shape, planner);
+    let (results, trace) = match plan.strategy {
+        PlannedStrategy::Flat => index.flat_filtered_search(query, matrix.k, allowed),
+        PlannedStrategy::PostFilter => index.post_filter_search(query, matrix.k, allowed, plan.ef),
+        PlannedStrategy::InTraversal => {
+            index.in_traversal_filtered_search(query, matrix.k, allowed, plan.ef)
+        }
+        PlannedStrategy::Acorn => index.acorn_filtered_search(query, matrix.k, allowed, plan.ef),
+    };
+    (trace.distance_computations, overlap(&results, oracle_ids))
+}
+
+/// Prints the planner-vs-fixed summary as a plain table.
+pub fn print_planner_summary(summary: &PlannerSummary) {
+    println!(
+        "{:<14}  {:>11}  {:>16}",
+        "strategy", "mean recall", "mean dist/query"
+    );
+    for row in &summary.strategies {
+        println!(
+            "{:<14}  {:>11.3}  {:>16.0}",
+            row.name, row.mean_recall, row.mean_distance_computations
+        );
+    }
+    println!("planner_regret: {:.3}", summary.regret);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -280,6 +436,32 @@ mod tests {
             metadata.insert(i, &[("category", Value::Str(category.into()))]);
         }
         (index, metadata)
+    }
+
+    #[test]
+    fn planner_summary_covers_all_strategies_and_keeps_recall_high() {
+        let base: Vec<Vec<f32>> = (0..300).map(|i| vec![i as f32, i as f32]).collect();
+        let mut index = HnswIndex::new(2, Metric::L2, HnswConfig::default());
+        for vector in &base {
+            index.insert(vector);
+        }
+        let queries = vec![vec![50.0, 50.0], vec![150.0, 150.0], vec![250.0, 250.0]];
+        let planner = PlannerConfig {
+            flat_threshold: 20,
+            ..Default::default()
+        };
+        let summary =
+            summarize_planner(&index, &base, &queries, Metric::L2, &config(), &planner, 16);
+
+        assert_eq!(summary.strategies.len(), 5);
+        assert!((0.0..=1.0).contains(&summary.regret));
+        let planner_row = summary.strategies.last().unwrap();
+        assert_eq!(planner_row.name, "Planner");
+        assert!(
+            planner_row.mean_recall >= 0.9,
+            "planner recall {} too low",
+            planner_row.mean_recall
+        );
     }
 
     #[test]

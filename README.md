@@ -98,7 +98,7 @@ The explaining only means something because the engine under it is real:
 | M1 | SIMD distance kernels (NEON / AVX) | ✅ done |
 | M2 | Filtered search: the strategies | ✅ done |
 | M3 | Correlation-aware benchmark matrix plus arXiv corpus | ✅ done |
-| M4 | Rule-based planner plus EXPLAIN SEARCH (counterfactual and regret) | ⬜ |
+| M4 | Rule-based planner plus EXPLAIN SEARCH (counterfactual and regret) | ✅ done |
 | M5 | Comparison vs FAISS / Qdrant / Weaviate / pgvector | ⬜ |
 | M6 | Query-log advisor | ⬜ |
 | M7 | Disk-backed storage (mmap) | ⬜ |
@@ -143,7 +143,7 @@ Run the recall check on the small SIFT set:
 
 ```
 bash scripts/download-datasets.sh siftsmall
-cargo run --release -p loupe-bench -- \
+cargo run --release -p loupe-bench --bin loupe-bench -- \
   datasets/siftsmall/siftsmall_base.fvecs \
   datasets/siftsmall/siftsmall_query.fvecs \
   datasets/siftsmall/siftsmall_groundtruth.ivecs

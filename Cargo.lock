@@ -207,6 +207,7 @@ dependencies = [
  "loupe-distance",
  "loupe-filter",
  "loupe-hnsw",
+ "loupe-planner",
  "loupe-storage",
  "roaring",
  "serde",

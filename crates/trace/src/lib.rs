@@ -81,6 +81,39 @@ pub struct TraceGraphExport {
     pub truncated: bool,
 }
 
+/// A short description of the filtered query the planner reasoned about.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct QuerySummary {
+    pub k: usize,
+    pub matching_count: u64,
+    pub selectivity: f32,
+    pub correlation: String,
+}
+
+/// How one strategy did on a query: its cost, how many results it returned, and
+/// how close it came to the exact filtered answer.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PlanReport {
+    pub strategy: String,
+    pub chosen: bool,
+    pub distance_computations: u64,
+    pub returned: usize,
+    pub recall_proxy: f32,
+}
+
+/// The EXPLAIN SEARCH result: the chosen plan, what the rejected plans would have
+/// done (the counterfactual), the trace, and any risks or advice. This shape is
+/// frozen here so the CLI, gRPC, and the graph explorer all read the same thing.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ExplainSearch {
+    pub query_summary: QuerySummary,
+    pub chosen_plan: PlanReport,
+    pub counterfactual_plans: Vec<PlanReport>,
+    pub trace_metrics: SearchTrace,
+    pub risk_flags: Vec<String>,
+    pub recommendations: Vec<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -157,5 +190,61 @@ mod tests {
         let json = serde_json::to_string(&record).unwrap();
         let back: QueryLogRecord = serde_json::from_str(&json).unwrap();
         assert_eq!(record, back);
+    }
+
+    fn sample_explain() -> ExplainSearch {
+        ExplainSearch {
+            query_summary: QuerySummary {
+                k: 10,
+                matching_count: 200,
+                selectivity: 0.5,
+                correlation: "anti_correlated".to_string(),
+            },
+            chosen_plan: PlanReport {
+                strategy: "InTraversal".to_string(),
+                chosen: true,
+                distance_computations: 1500,
+                returned: 10,
+                recall_proxy: 1.0,
+            },
+            counterfactual_plans: vec![
+                PlanReport {
+                    strategy: "PostFilter".to_string(),
+                    chosen: false,
+                    distance_computations: 600,
+                    returned: 5,
+                    recall_proxy: 0.5,
+                },
+                PlanReport {
+                    strategy: "Flat".to_string(),
+                    chosen: false,
+                    distance_computations: 200,
+                    returned: 10,
+                    recall_proxy: 1.0,
+                },
+            ],
+            trace_metrics: SearchTrace {
+                distance_computations: 1500,
+                nodes_visited: 1800,
+                ef_expansions: 0,
+            },
+            risk_flags: vec!["anti_correlated_filter".to_string()],
+            recommendations: vec![],
+        }
+    }
+
+    #[test]
+    fn explain_search_json_is_stable() {
+        let json = serde_json::to_string(&sample_explain()).unwrap();
+        let expected = r#"{"query_summary":{"k":10,"matching_count":200,"selectivity":0.5,"correlation":"anti_correlated"},"chosen_plan":{"strategy":"InTraversal","chosen":true,"distance_computations":1500,"returned":10,"recall_proxy":1.0},"counterfactual_plans":[{"strategy":"PostFilter","chosen":false,"distance_computations":600,"returned":5,"recall_proxy":0.5},{"strategy":"Flat","chosen":false,"distance_computations":200,"returned":10,"recall_proxy":1.0}],"trace_metrics":{"distance_computations":1500,"nodes_visited":1800,"ef_expansions":0},"risk_flags":["anti_correlated_filter"],"recommendations":[]}"#;
+        assert_eq!(json, expected);
+    }
+
+    #[test]
+    fn explain_search_round_trips() {
+        let explain = sample_explain();
+        let json = serde_json::to_string(&explain).unwrap();
+        let back: ExplainSearch = serde_json::from_str(&json).unwrap();
+        assert_eq!(explain, back);
     }
 }

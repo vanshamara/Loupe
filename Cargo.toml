@@ -5,6 +5,7 @@ members = [
     "crates/storage",
     "crates/trace",
     "crates/filter",
+    "crates/planner",
     "crates/hnsw",
     "bench",
 ]

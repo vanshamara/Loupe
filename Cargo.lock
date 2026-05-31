@@ -239,6 +239,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "loupe-planner"
+version = "0.1.0"
+dependencies = [
+ "loupe-distance",
+ "loupe-storage",
+ "roaring",
+]
+
+[[package]]
 name = "loupe-storage"
 version = "0.1.0"
 

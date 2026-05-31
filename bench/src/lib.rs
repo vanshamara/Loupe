@@ -1,6 +1,7 @@
 //! Loading helpers and recall scoring for the benchmark datasets.
 
 pub mod filters;
+pub mod matrix;
 
 use std::collections::HashSet;
 use std::fs::File;

@@ -1,6 +1,7 @@
 use std::env;
 use std::time::Instant;
 
+use loupe_bench::matrix::{MatrixConfig, print_matrix, run_matrix};
 use loupe_bench::{read_fvecs, read_ivecs, recall_at_k};
 use loupe_distance::Metric;
 use loupe_hnsw::{HnswConfig, HnswIndex, brute_force_search};
@@ -49,6 +50,17 @@ fn main() {
     println!("avg distances/query: {avg_distances:.0}");
     println!("recall@{K} (L2):     {l2_recall:.4}");
     println!("recall@{K} (cosine): {cosine_recall:.4}");
+
+    println!();
+    println!("=== filtered search matrix (L2) ===");
+    let matrix_config = MatrixConfig {
+        k: K,
+        ef: 64,
+        max_ef: 512,
+        seed: 1,
+    };
+    let cells = run_matrix(&l2_index, &base, &queries, Metric::L2, &matrix_config);
+    print_matrix(&cells);
 }
 
 fn build_index(base: &[Vec<f32>], dim: usize, metric: Metric) -> HnswIndex {

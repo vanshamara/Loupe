@@ -485,6 +485,7 @@ impl HnswIndex {
         let mut visited = HashSet::new();
         let mut to_explore = BinaryHeap::new();
         let mut results: BinaryHeap<Candidate> = BinaryHeap::new();
+        let mut to_consider: Vec<VectorId> = Vec::new();
 
         let entry_distance = self.distance(query, entry, trace);
         visited.insert(entry);
@@ -507,17 +508,17 @@ impl HnswIndex {
                 break;
             }
 
-            let mut to_consider = self.neighbors[current.id as usize][layer].clone();
+            to_consider.clear();
+            to_consider.extend_from_slice(&self.neighbors[current.id as usize][layer]);
             if expand {
-                let bridges: Vec<VectorId> = self.neighbors[current.id as usize][layer]
-                    .iter()
-                    .filter(|&&neighbor| !allowed.contains(neighbor))
-                    .flat_map(|&neighbor| self.neighbors[neighbor as usize][layer].iter().copied())
-                    .collect();
-                to_consider.extend(bridges);
+                for &neighbor in &self.neighbors[current.id as usize][layer] {
+                    if !allowed.contains(neighbor) {
+                        to_consider.extend_from_slice(&self.neighbors[neighbor as usize][layer]);
+                    }
+                }
             }
 
-            for node in to_consider {
+            for &node in &to_consider {
                 if !visited.insert(node) {
                     continue;
                 }

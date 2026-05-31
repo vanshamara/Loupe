@@ -20,6 +20,12 @@ datasets/
 *.ivecs
 *.bvecs
 *.npy
+*.jsonl
+
+# Python (embedding scripts)
+__pycache__/
+*.pyc
+.venv/
 
 # Editor and IDE
 .vscode/

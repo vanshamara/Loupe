@@ -207,6 +207,7 @@ dependencies = [
  "loupe-distance",
  "loupe-hnsw",
  "loupe-storage",
+ "roaring",
 ]
 
 [[package]]

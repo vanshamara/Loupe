@@ -1,7 +1,18 @@
 //! Distance functions for comparing vectors.
 //!
-//! These scalar versions are the reference. The SIMD kernels added later have to
-//! match them, so the tests in this file double as the correctness check.
+//! The scalar versions in [`scalar`] are the portable reference. On aarch64 the
+//! public functions use NEON, and the SIMD-vs-scalar tests check that the two
+//! agree within a small tolerance.
+
+pub mod scalar;
+
+#[cfg(target_arch = "aarch64")]
+mod neon;
+
+#[cfg(target_arch = "aarch64")]
+use neon as backend;
+#[cfg(not(target_arch = "aarch64"))]
+use scalar as backend;
 
 /// How two vectors are compared. Smaller always means closer, so search code can
 /// treat every metric the same way.
@@ -28,13 +39,13 @@ impl Metric {
 /// distances to each other, and skipping the square root is faster.
 pub fn l2_squared(a: &[f32], b: &[f32]) -> f32 {
     debug_assert_eq!(a.len(), b.len());
-    a.iter().zip(b.iter()).map(|(x, y)| (x - y) * (x - y)).sum()
+    backend::l2_squared(a, b)
 }
 
 /// Dot product of two vectors.
 pub fn dot(a: &[f32], b: &[f32]) -> f32 {
     debug_assert_eq!(a.len(), b.len());
-    a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
+    backend::dot(a, b)
 }
 
 /// Cosine distance, which is one minus cosine similarity. A zero-length vector has
@@ -52,6 +63,27 @@ pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct Rng(u64);
+
+    impl Rng {
+        fn new(seed: u64) -> Self {
+            Rng(seed | 1)
+        }
+
+        fn next_f32(&mut self) -> f32 {
+            let mut x = self.0;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            self.0 = x;
+            (x >> 40) as f32 / (1u64 << 24) as f32
+        }
+    }
+
+    fn random_vector(rng: &mut Rng, dim: usize) -> Vec<f32> {
+        (0..dim).map(|_| rng.next_f32()).collect()
+    }
 
     #[test]
     fn l2_squared_of_equal_vectors_is_zero() {
@@ -113,5 +145,37 @@ mod tests {
         let a = [1.0, 2.0, 3.0];
         let b = [4.0, 5.0, 6.0];
         assert_eq!(Metric::Dot.distance(&a, &b), -32.0);
+    }
+
+    #[test]
+    fn dispatched_dot_matches_scalar() {
+        let mut rng = Rng::new(99);
+        for dim in [1usize, 2, 3, 4, 5, 7, 8, 16, 31, 64, 127, 128] {
+            let a = random_vector(&mut rng, dim);
+            let b = random_vector(&mut rng, dim);
+            let reference = scalar::dot(&a, &b);
+            let actual = dot(&a, &b);
+            let tolerance = 1e-3 * reference.abs().max(1.0);
+            assert!(
+                (actual - reference).abs() <= tolerance,
+                "dim {dim}: {actual} vs {reference}"
+            );
+        }
+    }
+
+    #[test]
+    fn dispatched_l2_squared_matches_scalar() {
+        let mut rng = Rng::new(7);
+        for dim in [1usize, 2, 3, 4, 5, 7, 8, 16, 31, 64, 127, 128] {
+            let a = random_vector(&mut rng, dim);
+            let b = random_vector(&mut rng, dim);
+            let reference = scalar::l2_squared(&a, &b);
+            let actual = l2_squared(&a, &b);
+            let tolerance = 1e-3 * reference.abs().max(1.0);
+            assert!(
+                (actual - reference).abs() <= tolerance,
+                "dim {dim}: {actual} vs {reference}"
+            );
+        }
     }
 }

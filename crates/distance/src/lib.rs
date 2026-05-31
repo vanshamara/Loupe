@@ -9,10 +9,15 @@ pub mod scalar;
 #[cfg(target_arch = "aarch64")]
 mod neon;
 
+#[cfg(target_arch = "x86_64")]
+mod x86;
+
 #[cfg(target_arch = "aarch64")]
 use neon as backend;
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
 use scalar as backend;
+#[cfg(target_arch = "x86_64")]
+use x86 as backend;
 
 /// How two vectors are compared. Smaller always means closer, so search code can
 /// treat every metric the same way.

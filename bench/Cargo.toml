@@ -7,4 +7,7 @@ edition.workspace = true
 loupe-distance = { path = "../crates/distance" }
 loupe-storage = { path = "../crates/storage" }
 loupe-hnsw = { path = "../crates/hnsw" }
+loupe-filter = { path = "../crates/filter" }
 roaring = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

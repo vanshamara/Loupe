@@ -205,9 +205,12 @@ name = "loupe-bench"
 version = "0.1.0"
 dependencies = [
  "loupe-distance",
+ "loupe-filter",
  "loupe-hnsw",
  "loupe-storage",
  "roaring",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

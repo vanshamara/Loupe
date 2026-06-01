@@ -121,11 +121,12 @@ The search looks at roughly 660 vectors per query instead of all 10,000, so it i
 already skipping most of the work. Numbers on the full million-vector set land
 with the benchmark suite.
 
-M5 is in progress. Loupe now exports matrix CSVs and Loupe-only SVG plots. The
-external adapters cover FAISS, Qdrant, Weaviate, and pgvector. The next step is
-running them on the full matrix and turning the CSVs into comparison plots. The
-headline case is 0.1% of rows passing the filter while sitting far from the
-query, where simple filtering falls apart and the planner pays off.
+M5 is in progress. Loupe now exports matrix CSVs, Loupe-only SVG plots, external
+baselines for FAISS, Qdrant, Weaviate, and pgvector, and a packaged `siftsmall`
+smoke result. The next step is running the same shape on larger datasets and
+real metadata. The headline case is 0.1% of rows passing the filter while
+sitting far from the query, where simple filtering falls apart and the planner
+pays off.
 
 The benchmark runner also includes a compaction probe. It deletes a controlled
 slice of a durable collection, reports tombstoned visits, distance work, latency,
@@ -266,6 +267,11 @@ python bench/package_results.py \
 
 The bundle lands in `bench/results/<run-id>/` with copied CSVs, copied SVGs,
 `metadata.json`, and `summary.md`.
+
+The current smoke bundle is in
+`bench/results/siftsmall-smoke-2026-05-31/summary.md`. On this run, Loupe
+Planner averaged 0.995 recall, FAISS under-returned on 10 hard-filter cells, and
+Qdrant, pgvector, and Weaviate returned full result sets on the small dataset.
 
 For the full million-vector set, run the download script with `sift` instead of
 `siftsmall`, then point the command at the `sift_*` files.

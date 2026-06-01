@@ -232,6 +232,22 @@ External engines do not expose the same distance-computation counter Loupe does.
 For those rows, the CSV uses the returned candidate count from the engine as a
 cost proxy.
 
+Generate combined comparison plots:
+
+```
+python bench/comparison_plots.py \
+  /tmp/loupe-matrix.csv \
+  /tmp/faiss-matrix.csv \
+  /tmp/qdrant-matrix.csv \
+  /tmp/weaviate-matrix.csv \
+  /tmp/pgvector-matrix.csv \
+  --out-dir /tmp/loupe-comparison-plots
+```
+
+The output directory contains SVGs for average recall, average latency, hard
+anti-correlated filters, FAISS under-return cells, and Loupe Planner vs external
+engines.
+
 For the full million-vector set, run the download script with `sift` instead of
 `siftsmall`, then point the command at the `sift_*` files.
 

@@ -141,16 +141,16 @@ fn main() {
             compare_planners,
             planner_summary_csv,
             feedback_log,
-        } => replay(
-            &dir,
-            &query,
-            &filter,
-            &out,
+        } => replay(ReplayOptions {
+            dir: &dir,
+            query: &query,
+            filter: &filter,
+            out: &out,
             k,
             compare_planners,
-            planner_summary_csv.as_deref(),
-            feedback_log.as_deref(),
-        ),
+            planner_summary_csv: planner_summary_csv.as_deref(),
+            feedback_log: feedback_log.as_deref(),
+        }),
         Command::Advise {
             log,
             markdown_out,
@@ -229,41 +229,51 @@ fn explain(dir: &str, query: &str, index: usize, filter: &str, k: usize) -> io::
     Ok(())
 }
 
-fn replay(
-    dir: &str,
-    query: &str,
-    filter: &str,
-    out: &str,
+struct ReplayOptions<'a> {
+    dir: &'a str,
+    query: &'a str,
+    filter: &'a str,
+    out: &'a str,
     k: usize,
     compare_planners: bool,
-    planner_summary_csv: Option<&str>,
-    feedback_log: Option<&str>,
-) -> io::Result<()> {
-    let manifest: Manifest = serde_json::from_str(&std::fs::read_to_string(manifest_path(dir))?)
-        .map_err(io::Error::other)?;
-    let mut collection = Collection::open(dir, manifest.dim, manifest.metric)?;
-    let queries = read_records(query)?;
-    let expr = parse_filter(filter).map_err(io::Error::other)?;
-    if let Some(path) = feedback_log {
-        if let Some(rate) = historical_miss_rate_from_log(path, filter)? {
+    planner_summary_csv: Option<&'a str>,
+    feedback_log: Option<&'a str>,
+}
+
+fn replay(options: ReplayOptions<'_>) -> io::Result<()> {
+    let manifest: Manifest =
+        serde_json::from_str(&std::fs::read_to_string(manifest_path(options.dir))?)
+            .map_err(io::Error::other)?;
+    let mut collection = Collection::open(options.dir, manifest.dim, manifest.metric)?;
+    let queries = read_records(options.query)?;
+    let expr = parse_filter(options.filter).map_err(io::Error::other)?;
+    if let Some(path) = options.feedback_log {
+        if let Some(rate) = historical_miss_rate_from_log(path, options.filter)? {
             collection.set_historical_miss_rate(rate);
             println!("historical miss rate: {rate:.3} from {path}");
         } else {
-            println!("historical miss rate: no recall_smoke rows for filter {filter:?}");
+            println!(
+                "historical miss rate: no recall_smoke rows for filter {:?}",
+                options.filter
+            );
         }
     }
     let planner_config = PlannerConfig::default();
-    let mut planner_summary = if compare_planners || planner_summary_csv.is_some() {
+    let mut planner_summary = if options.compare_planners || options.planner_summary_csv.is_some() {
         Some(ReplayPlannerSummary::default())
     } else {
         None
     };
 
-    let mut file = OpenOptions::new().create(true).append(true).open(out)?;
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(options.out)?;
     let mut plan_counts: HashMap<String, usize> = HashMap::new();
     let mut total_latency = 0u64;
     for record in &queries {
-        let (_, log) = collection.search_logged(&record.embedding, &expr, filter, k);
+        let (_, log) =
+            collection.search_logged(&record.embedding, &expr, options.filter, options.k);
         *plan_counts
             .entry(log.plan.clone().unwrap_or_default())
             .or_default() += 1;
@@ -274,23 +284,27 @@ fn replay(
             serde_json::to_string(&log).map_err(io::Error::other)?
         )?;
         if let Some(summary) = &mut planner_summary {
-            let (_, explain) = collection.explain_search(&record.embedding, &expr, k);
+            let (_, explain) = collection.explain_search(&record.embedding, &expr, options.k);
             summary.observe(&explain, &planner_config)?;
         }
     }
 
     let count = queries.len().max(1) as u64;
-    println!("replayed {} queries with filter {filter:?}", queries.len());
+    println!(
+        "replayed {} queries with filter {:?}",
+        queries.len(),
+        options.filter
+    );
     println!("avg latency: {} us", total_latency / count);
     println!("plans chosen: {plan_counts:?}");
     if let Some(summary) = &planner_summary {
         print_replay_planner_summary(summary);
-        if let Some(path) = planner_summary_csv {
+        if let Some(path) = options.planner_summary_csv {
             write_replay_planner_summary_csv(path, summary)?;
             println!("planner summary CSV: {path}");
         }
     }
-    println!("log appended to {out}");
+    println!("log appended to {}", options.out);
     Ok(())
 }
 
@@ -601,7 +615,7 @@ fn retrieval_health_report(
     let average_recall = mean_f32(records.iter().filter_map(|record| record.recall_smoke));
     let tombstoned_visits: u64 = records
         .iter()
-        .map(|record| u64::from(record.metrics.tombstoned_visits))
+        .map(|record| record.metrics.tombstoned_visits)
         .sum();
     let plan_mix = count_by(records.iter().map(|record| {
         record

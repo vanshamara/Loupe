@@ -52,7 +52,7 @@ benchmarks are in.
 ```mermaid
 flowchart TD
     C[gRPC / CLI] --> E[engine: collection API]
-    E --> P[planner: estimate selectivity and correlation, pick a strategy]
+    E --> P[planner: estimate query cost and pick a strategy]
     P --> S{execution strategy}
     P --> CF[counterfactual: chosen plan vs the others, plus planner_regret]
     S --> H[hnsw: beam search, fills a SearchTrace]
@@ -105,7 +105,7 @@ The explaining only means something because the engine under it is real:
 | M8 | WAL plus crash recovery | ✅ done |
 | M9 | gRPC API and CLI (EXPLAIN plus advisor) | ✅ done |
 | M10 | Deletes, dead-node-aware search, compaction | ✅ done |
-| M11 | Cost-based planner | ⬜ |
+| M11 | Cost-based planner | 🟡 in progress |
 | M11.5 | Polish: developer experience and metrics | ⬜ |
 | M12 | (optional) Loupe Graph Explorer, 3D trace view | ⬜ |
 
@@ -132,6 +132,11 @@ The benchmark runner also includes a compaction probe. It deletes a controlled
 slice of a durable collection, reports tombstoned visits, distance work, latency,
 and WAL bytes, then compacts and reports the same numbers again.
 
+M11 has started. The live planner now scores `Flat`, `PostFilter`,
+`InTraversal`, and `Acorn` with a cost model over selectivity, candidate count,
+`k`, vector count, `ef`, correlation, and historical recall misses. The remaining
+work is calibration against the benchmark matrix and replay logs.
+
 ## EXPLAIN Reference Workflow
 
 Build a durable collection from an embedded corpus, then explain a filtered query.
@@ -144,10 +149,10 @@ loupe explain --dir /tmp/loupe-arxiv --query datasets/arxiv/arxiv_query.jsonl \
   --index 0 --filter "category=math.PR"
 ```
 
-For a small matching set, Loupe can pick `Flat` because the exact scan is cheaper
-than graph search. For a strict anti-correlated filter above the flat-scan
-threshold, it should pick `Acorn+AdaptiveEf`. In both cases, the counterfactual
-shows what the other plans would have cost:
+For a small matching set, Loupe can pick `Flat` because the cost model sees exact
+scan as cheaper than graph search. For a strict anti-correlated filter above the
+flat-scan threshold, it should pick `Acorn+AdaptiveEf`. In both cases, the
+counterfactual shows what the other plans would have cost:
 
 ```
 chosen plan: Acorn+AdaptiveEf

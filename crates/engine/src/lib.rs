@@ -399,12 +399,8 @@ impl Collection {
             self.seed,
         );
         let correlation = classify_correlation(score, self.planner.correlation_band);
-        let shape = QueryShape {
-            total: total as usize,
-            matching_count: matching_count as usize,
-            k,
-            correlation,
-        };
+        let mut shape = QueryShape::new(total as usize, matching_count as usize, k, correlation);
+        shape.candidate_count = self.planner.ef.max(k);
         let plan = choose_plan(&shape, &self.planner);
 
         let flat_plan = report_plan(PlannedStrategy::Flat, &plan);
@@ -477,12 +473,9 @@ impl Collection {
             self.correlation_samples,
             self.seed,
         );
-        let shape = QueryShape {
-            total: total as usize,
-            matching_count: allowed.len() as usize,
-            k,
-            correlation: classify_correlation(score, self.planner.correlation_band),
-        };
+        let correlation = classify_correlation(score, self.planner.correlation_band);
+        let mut shape = QueryShape::new(total as usize, allowed.len() as usize, k, correlation);
+        shape.candidate_count = self.planner.ef.max(k);
         choose_plan(&shape, &self.planner)
     }
 
@@ -696,6 +689,7 @@ mod tests {
             ef: 64,
             max_ef: 256,
             correlation_band: 0.1,
+            ..PlannerConfig::default()
         });
         for i in 0..200u32 {
             let category = if i < 100 { "low" } else { "high" };
@@ -763,6 +757,7 @@ mod tests {
             ef: 10,
             max_ef: 128,
             correlation_band: 0.1,
+            ..PlannerConfig::default()
         });
 
         for i in 0..200u32 {

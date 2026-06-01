@@ -1,8 +1,5 @@
-//! The query planner: judge how a filter relates to the query, then pick a
-//! filtered-search strategy. The rules encode what the benchmark matrix showed:
-//! scan exactly when few ids match, search-then-drop only when the filter is broad
-//! and not anti-correlated, and use ACORN-style bridging when the filter is strict
-//! or points away from the query.
+//! The query planner estimates the cost of each filtered-search strategy and
+//! picks the lowest-cost plan for the current query shape.
 
 use loupe_distance::Metric;
 use loupe_storage::{StorageAccessor, VectorId};
@@ -35,8 +32,7 @@ pub struct Plan {
     pub reason: &'static str,
 }
 
-/// Thresholds the rule ladder uses. Hand-tuned for now; M11 replaces them with a
-/// calibrated cost model.
+/// Tunable inputs for the cost model.
 pub struct PlannerConfig {
     pub flat_threshold: usize,
     pub strict_selectivity: f32,
@@ -44,6 +40,7 @@ pub struct PlannerConfig {
     pub ef: usize,
     pub max_ef: usize,
     pub correlation_band: f32,
+    pub recall_miss_penalty: f32,
 }
 
 impl Default for PlannerConfig {
@@ -55,6 +52,7 @@ impl Default for PlannerConfig {
             ef: 64,
             max_ef: 512,
             correlation_band: 0.1,
+            recall_miss_penalty: 10_000.0,
         }
     }
 }
@@ -64,62 +62,222 @@ pub struct QueryShape {
     pub total: usize,
     pub matching_count: usize,
     pub k: usize,
+    pub candidate_count: usize,
     pub correlation: CorrelationClass,
+    pub historical_miss_rate: f32,
 }
 
-/// Picks a filtered-search strategy from the query shape.
+impl QueryShape {
+    /// Creates a query shape with no historical miss signal.
+    pub fn new(
+        total: usize,
+        matching_count: usize,
+        k: usize,
+        correlation: CorrelationClass,
+    ) -> Self {
+        Self {
+            total,
+            matching_count,
+            k,
+            candidate_count: k,
+            correlation,
+            historical_miss_rate: 0.0,
+        }
+    }
+}
+
+/// The cost model's estimate for one candidate strategy.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StrategyEstimate {
+    pub strategy: PlannedStrategy,
+    pub expected_work: f32,
+    pub recall_miss_risk: f32,
+    pub total_cost: f32,
+}
+
+/// Estimates strategy costs from selectivity, candidates, correlation, and miss history.
+pub fn estimate_strategy_costs(
+    shape: &QueryShape,
+    config: &PlannerConfig,
+) -> Vec<StrategyEstimate> {
+    let ef = config.ef.max(shape.k);
+    let candidate_count = shape.candidate_count.max(shape.k).max(ef) as f32;
+    let selectivity = selectivity(shape);
+    let history = shape.historical_miss_rate.clamp(0.0, 1.0);
+
+    let flat_work = flat_work(shape, config);
+    let flat_risk = if shape.matching_count >= shape.k {
+        0.0
+    } else {
+        1.0
+    };
+
+    let post_work = (candidate_count / selectivity.max(0.001)).min(shape.total.max(1) as f32);
+    let post_risk = post_filter_risk(selectivity, shape.correlation, history, config);
+
+    let in_traversal_work = candidate_count * in_traversal_multiplier(selectivity, shape);
+    let in_traversal_risk = in_traversal_risk(selectivity, shape.correlation, history, config);
+
+    let acorn_work = candidate_count * acorn_multiplier(selectivity, shape.correlation, config);
+    let acorn_risk = acorn_risk(selectivity, shape.correlation, history, config);
+
+    vec![
+        estimate(PlannedStrategy::Flat, flat_work, flat_risk, config),
+        estimate(PlannedStrategy::PostFilter, post_work, post_risk, config),
+        estimate(
+            PlannedStrategy::InTraversal,
+            in_traversal_work,
+            in_traversal_risk,
+            config,
+        ),
+        estimate(PlannedStrategy::Acorn, acorn_work, acorn_risk, config),
+    ]
+}
+
+/// Picks the lowest-cost filtered-search strategy for the query shape.
 pub fn choose_plan(shape: &QueryShape, config: &PlannerConfig) -> Plan {
     let ef = config.ef.max(shape.k);
     let max_ef = config.max_ef.max(ef);
-
-    if shape.matching_count <= config.flat_threshold.max(shape.k) {
-        return Plan {
-            strategy: PlannedStrategy::Flat,
-            ef,
-            max_ef,
-            adaptive: false,
-            reason: "few matches: scan them exactly",
-        };
-    }
-
-    let selectivity = shape.matching_count as f32 / shape.total.max(1) as f32;
-
-    if shape.correlation == CorrelationClass::AntiCorrelated {
-        return Plan {
-            strategy: PlannedStrategy::Acorn,
-            ef,
-            max_ef,
-            adaptive: true,
-            reason: "anti-correlated filter: bridge through non-matching nodes",
-        };
-    }
-
-    if selectivity >= config.broad_selectivity {
-        return Plan {
-            strategy: PlannedStrategy::PostFilter,
-            ef,
-            max_ef,
-            adaptive: true,
-            reason: "broad filter: search then drop non-matches",
-        };
-    }
-
-    if selectivity < config.strict_selectivity {
-        return Plan {
-            strategy: PlannedStrategy::Acorn,
-            ef,
-            max_ef,
-            adaptive: true,
-            reason: "strict filter: bridge through non-matching nodes",
-        };
-    }
+    let estimates = estimate_strategy_costs(shape, config);
+    let winner = estimates
+        .iter()
+        .min_by(|left, right| left.total_cost.total_cmp(&right.total_cost))
+        .expect("planner always estimates every strategy");
 
     Plan {
-        strategy: PlannedStrategy::InTraversal,
+        strategy: winner.strategy,
         ef,
         max_ef,
-        adaptive: true,
-        reason: "selective filter: filter during traversal",
+        adaptive: winner.strategy != PlannedStrategy::Flat,
+        reason: plan_reason(winner.strategy, shape, config),
+    }
+}
+
+fn selectivity(shape: &QueryShape) -> f32 {
+    shape.matching_count as f32 / shape.total.max(1) as f32
+}
+
+fn flat_work(shape: &QueryShape, config: &PlannerConfig) -> f32 {
+    let work = shape.matching_count.max(shape.k) as f32;
+    if shape.matching_count <= config.flat_threshold.max(shape.k) {
+        return work;
+    }
+    work * 10.0
+}
+
+fn estimate(
+    strategy: PlannedStrategy,
+    expected_work: f32,
+    recall_miss_risk: f32,
+    config: &PlannerConfig,
+) -> StrategyEstimate {
+    StrategyEstimate {
+        strategy,
+        expected_work,
+        recall_miss_risk,
+        total_cost: expected_work + recall_miss_risk * config.recall_miss_penalty,
+    }
+}
+
+fn post_filter_risk(
+    selectivity: f32,
+    correlation: CorrelationClass,
+    history: f32,
+    config: &PlannerConfig,
+) -> f32 {
+    let base = if selectivity >= config.broad_selectivity {
+        0.02
+    } else if selectivity >= 0.1 {
+        0.25
+    } else if selectivity >= config.strict_selectivity {
+        0.55
+    } else {
+        0.85
+    };
+    let correlation_risk = match correlation {
+        CorrelationClass::Positive => -0.05,
+        CorrelationClass::Neutral => 0.0,
+        CorrelationClass::AntiCorrelated => 0.55,
+    };
+    (base + correlation_risk + history).clamp(0.0, 1.0)
+}
+
+fn in_traversal_risk(
+    selectivity: f32,
+    correlation: CorrelationClass,
+    history: f32,
+    config: &PlannerConfig,
+) -> f32 {
+    let base = if selectivity < config.strict_selectivity {
+        0.12
+    } else if selectivity >= config.broad_selectivity {
+        0.06
+    } else {
+        0.04
+    };
+    let correlation_risk = match correlation {
+        CorrelationClass::Positive => -0.01,
+        CorrelationClass::Neutral => 0.0,
+        CorrelationClass::AntiCorrelated => 0.22,
+    };
+    (base + correlation_risk + history * 0.5).clamp(0.0, 1.0)
+}
+
+fn acorn_risk(
+    selectivity: f32,
+    correlation: CorrelationClass,
+    history: f32,
+    config: &PlannerConfig,
+) -> f32 {
+    let base = if correlation == CorrelationClass::AntiCorrelated
+        || selectivity < config.strict_selectivity
+    {
+        0.03
+    } else if selectivity >= config.broad_selectivity {
+        0.08
+    } else {
+        0.05
+    };
+    (base + history * 0.25).clamp(0.0, 1.0)
+}
+
+fn in_traversal_multiplier(selectivity: f32, shape: &QueryShape) -> f32 {
+    match shape.correlation {
+        CorrelationClass::AntiCorrelated => 20.0,
+        CorrelationClass::Positive if selectivity >= 0.1 => 2.0,
+        _ if selectivity < 0.01 => 8.0,
+        _ if selectivity < 0.2 => 3.0,
+        _ => 2.0,
+    }
+}
+
+fn acorn_multiplier(
+    selectivity: f32,
+    correlation: CorrelationClass,
+    config: &PlannerConfig,
+) -> f32 {
+    if correlation == CorrelationClass::AntiCorrelated || selectivity < config.strict_selectivity {
+        8.0
+    } else if selectivity < 0.2 {
+        10.0
+    } else {
+        12.0
+    }
+}
+
+fn plan_reason(
+    strategy: PlannedStrategy,
+    shape: &QueryShape,
+    config: &PlannerConfig,
+) -> &'static str {
+    match strategy {
+        PlannedStrategy::Flat if shape.matching_count <= config.flat_threshold.max(shape.k) => {
+            "cost model: exact scan has the lowest expected work"
+        }
+        PlannedStrategy::Flat => "cost model: exact scan avoids recall risk",
+        PlannedStrategy::PostFilter => "cost model: broad aligned filter keeps post-filter cheap",
+        PlannedStrategy::InTraversal => "cost model: filtered traversal balances recall and work",
+        PlannedStrategy::Acorn => "cost model: bridge through non-matching nodes to protect recall",
     }
 }
 
@@ -197,12 +355,9 @@ mod tests {
     use loupe_storage::InMemoryVectorStore;
 
     fn shape(matching_count: usize, total: usize, correlation: CorrelationClass) -> QueryShape {
-        QueryShape {
-            total,
-            matching_count,
-            k: 10,
-            correlation,
-        }
+        let mut shape = QueryShape::new(total, matching_count, 10, correlation);
+        shape.candidate_count = 64;
+        shape
     }
 
     #[test]
@@ -252,6 +407,29 @@ mod tests {
             &PlannerConfig::default(),
         );
         assert_eq!(plan.strategy, PlannedStrategy::InTraversal);
+        assert!(plan.adaptive);
+    }
+
+    #[test]
+    fn estimates_include_every_strategy() {
+        let estimates = estimate_strategy_costs(
+            &shape(60_000, 100_000, CorrelationClass::Neutral),
+            &PlannerConfig::default(),
+        );
+        assert_eq!(estimates.len(), 4);
+        assert!(estimates.iter().any(|estimate| {
+            estimate.strategy == PlannedStrategy::PostFilter && estimate.total_cost < 1_000.0
+        }));
+    }
+
+    #[test]
+    fn historical_misses_raise_post_filter_cost() {
+        let mut query = shape(60_000, 100_000, CorrelationClass::Neutral);
+        query.historical_miss_rate = 0.5;
+
+        let plan = choose_plan(&query, &PlannerConfig::default());
+
+        assert_ne!(plan.strategy, PlannedStrategy::PostFilter);
         assert!(plan.adaptive);
     }
 

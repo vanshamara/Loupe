@@ -468,12 +468,9 @@ fn run_planner_strategy(
         samples,
         matrix.seed,
     );
-    let shape = QueryShape {
-        total: index.len(),
-        matching_count: allowed.len() as usize,
-        k: matrix.k,
-        correlation: classify_correlation(score, planner.correlation_band),
-    };
+    let correlation = classify_correlation(score, planner.correlation_band);
+    let mut shape = QueryShape::new(index.len(), allowed.len() as usize, matrix.k, correlation);
+    shape.candidate_count = matrix.ef.max(matrix.k);
     let plan = choose_plan(&shape, planner);
     let start = Instant::now();
     let (results, trace) = if plan.adaptive {

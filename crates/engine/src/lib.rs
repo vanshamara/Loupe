@@ -3,6 +3,7 @@
 
 use std::collections::HashSet;
 use std::io;
+use std::time::Instant;
 
 use loupe_distance::Metric;
 use loupe_filter::MetadataStore;
@@ -19,7 +20,7 @@ use roaring::RoaringBitmap;
 pub use loupe_filter::{Expr, Value};
 pub use loupe_hnsw::Neighbor;
 pub use loupe_planner::{Plan, PlannedStrategy};
-pub use loupe_trace::{ExplainSearch, PlanReport, QuerySummary};
+pub use loupe_trace::{ExplainSearch, PlanReport, QueryLogRecord, QuerySummary};
 
 const STRATEGIES: [PlannedStrategy; 4] = [
     PlannedStrategy::Flat,
@@ -116,6 +117,34 @@ impl Collection {
         let plan = self.plan_for(query, &allowed, k);
         let (results, _) = self.run(plan.strategy, query, &allowed, k, plan.ef);
         (results, plan)
+    }
+
+    /// Like `search`, but also returns a query-log record (the cheap always-on
+    /// trace) so the workload can be saved and fed to the advisor. `filter_label`
+    /// is the human-readable filter that goes in the log.
+    pub fn search_logged(
+        &self,
+        query: &[f32],
+        filter: &Expr,
+        filter_label: &str,
+        k: usize,
+    ) -> (Vec<Neighbor>, QueryLogRecord) {
+        let allowed = self.metadata.evaluate(filter);
+        let plan = self.plan_for(query, &allowed, k);
+        let start = Instant::now();
+        let (results, trace) = self.run(plan.strategy, query, &allowed, k, plan.ef);
+        let latency_micros = start.elapsed().as_micros() as u64;
+        let record = QueryLogRecord {
+            query_id: hash_query(query),
+            k,
+            latency_micros,
+            returned: results.iter().map(|n| n.id).collect(),
+            metrics: trace,
+            filter: Some(filter_label.to_string()),
+            plan: Some(strategy_name(plan.strategy).to_string()),
+            recall_smoke: None,
+        };
+        (results, record)
     }
 
     /// Runs the chosen strategy and the rejected ones, returning the chosen
@@ -261,6 +290,15 @@ pub fn parse_filter(text: &str) -> Result<Expr, String> {
         field.trim().to_string(),
         Value::Str(value.trim().to_string()),
     ))
+}
+
+fn hash_query(query: &[f32]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for value in query {
+        hash ^= u64::from(value.to_bits());
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
 }
 
 fn overlap(results: &[Neighbor], oracle_ids: &HashSet<VectorId>) -> f32 {

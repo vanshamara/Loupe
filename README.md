@@ -100,7 +100,7 @@ The explaining only means something because the engine under it is real:
 | M3 | Correlation-aware benchmark matrix plus arXiv corpus | ✅ done |
 | M4 | Rule-based planner plus EXPLAIN SEARCH (counterfactual and regret) | ✅ done |
 | M5 | Comparison vs FAISS / Qdrant / Weaviate / pgvector | ⬜ |
-| M6 | Query-log advisor | ⬜ |
+| M6 | Query-log advisor | ✅ done |
 | M7 | Disk-backed storage (mmap) | ✅ done |
 | M8 | WAL plus crash recovery | ✅ done |
 | M9 | gRPC API and CLI (EXPLAIN plus advisor) | ✅ done |

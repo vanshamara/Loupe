@@ -2,11 +2,14 @@
 //! then run `explain` to see the chosen plan and what the rejected plans would
 //! have cost.
 
-use std::io;
+use std::collections::HashMap;
+use std::fs::OpenOptions;
+use std::io::{self, Write};
 
 use clap::{Parser, Subcommand};
+use loupe_advisor::advise;
 use loupe_distance::Metric;
-use loupe_engine::{Collection, ExplainSearch, PlanReport, Value, parse_filter};
+use loupe_engine::{Collection, ExplainSearch, PlanReport, QueryLogRecord, Value, parse_filter};
 use serde::{Deserialize, Serialize};
 
 #[derive(Parser)]
@@ -38,6 +41,24 @@ enum Command {
         #[arg(long, default_value_t = 10)]
         k: usize,
     },
+    /// Replay a workload, log what the planner did, and append it to a log file.
+    Replay {
+        #[arg(long)]
+        dir: String,
+        #[arg(long)]
+        query: String,
+        #[arg(long)]
+        filter: String,
+        #[arg(long)]
+        out: String,
+        #[arg(long, default_value_t = 10)]
+        k: usize,
+    },
+    /// Read a query log and print the advisor's recommendations.
+    Advise {
+        #[arg(long)]
+        log: String,
+    },
 }
 
 #[derive(Deserialize)]
@@ -65,6 +86,14 @@ fn main() {
             filter,
             k,
         } => explain(&dir, &query, index, &filter, k),
+        Command::Replay {
+            dir,
+            query,
+            filter,
+            out,
+            k,
+        } => replay(&dir, &query, &filter, &out, k),
+        Command::Advise { log } => advise_log(&log),
     };
     if let Err(error) = result {
         eprintln!("error: {error}");
@@ -117,6 +146,62 @@ fn explain(dir: &str, query: &str, index: usize, filter: &str, k: usize) -> io::
     println!();
     let ids: Vec<u32> = results.iter().map(|n| n.id).collect();
     println!("returned ids: {ids:?}");
+    Ok(())
+}
+
+fn replay(dir: &str, query: &str, filter: &str, out: &str, k: usize) -> io::Result<()> {
+    let manifest: Manifest = serde_json::from_str(&std::fs::read_to_string(manifest_path(dir))?)
+        .map_err(io::Error::other)?;
+    let collection = Collection::open(dir, manifest.dim, manifest.metric)?;
+    let queries = read_records(query)?;
+    let expr = parse_filter(filter).map_err(io::Error::other)?;
+
+    let mut file = OpenOptions::new().create(true).append(true).open(out)?;
+    let mut plan_counts: HashMap<String, usize> = HashMap::new();
+    let mut total_latency = 0u64;
+    for record in &queries {
+        let (_, log) = collection.search_logged(&record.embedding, &expr, filter, k);
+        *plan_counts
+            .entry(log.plan.clone().unwrap_or_default())
+            .or_default() += 1;
+        total_latency += log.latency_micros;
+        writeln!(
+            file,
+            "{}",
+            serde_json::to_string(&log).map_err(io::Error::other)?
+        )?;
+    }
+
+    let count = queries.len().max(1) as u64;
+    println!("replayed {} queries with filter {filter:?}", queries.len());
+    println!("avg latency: {} us", total_latency / count);
+    println!("plans chosen: {plan_counts:?}");
+    println!("log appended to {out}");
+    Ok(())
+}
+
+fn advise_log(log: &str) -> io::Result<()> {
+    let content = std::fs::read_to_string(log)?;
+    let mut records: Vec<QueryLogRecord> = Vec::new();
+    for line in content.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        records.push(serde_json::from_str(line).map_err(io::Error::other)?);
+    }
+
+    let recommendations = advise(&records);
+    if recommendations.is_empty() {
+        println!("no recommendations from {} queries", records.len());
+        return Ok(());
+    }
+    println!("recommendations from {} queries:", records.len());
+    for recommendation in &recommendations {
+        println!(
+            "  [{}] {}: {}",
+            recommendation.category, recommendation.filter, recommendation.message
+        );
+    }
     Ok(())
 }
 

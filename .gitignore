@@ -15,8 +15,9 @@ secrets/
 
 # Datasets and large vector files (downloaded locally)
 datasets/
-bench/results/
-results/
+/results/
+bench/results/**/raw/
+bench/results/**/tmp/
 *.hdf5
 *.fvecs
 *.ivecs

@@ -248,6 +248,25 @@ The output directory contains SVGs for average recall, average latency, hard
 anti-correlated filters, FAISS under-return cells, and Loupe Planner vs external
 engines.
 
+Package a publishable result bundle after the run looks good:
+
+```
+python bench/package_results.py \
+  --run-id siftsmall-smoke-2026-05-31 \
+  --dataset siftsmall \
+  --csv /tmp/loupe-matrix.csv \
+  --csv /tmp/faiss-matrix.csv \
+  --csv /tmp/qdrant-matrix.csv \
+  --csv /tmp/weaviate-matrix.csv \
+  --csv /tmp/pgvector-matrix.csv \
+  --plot-dir /tmp/loupe-plots \
+  --plot-dir /tmp/loupe-comparison-plots \
+  --notes "siftsmall smoke run; external engines use returned candidate count as the cost proxy"
+```
+
+The bundle lands in `bench/results/<run-id>/` with copied CSVs, copied SVGs,
+`metadata.json`, and `summary.md`.
+
 For the full million-vector set, run the download script with `sift` instead of
 `siftsmall`, then point the command at the `sift_*` files.
 

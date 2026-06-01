@@ -208,6 +208,8 @@ Run the Docker-backed baselines:
 
 ```
 docker compose -f docker/benchmark-compose.yml up -d qdrant weaviate pgvector
+python3.11 -m venv .venv
+. .venv/bin/activate
 python -m pip install -r scripts/requirements-competitors.txt
 python bench/qdrant_baseline.py \
   datasets/siftsmall/siftsmall_base.fvecs \

@@ -28,9 +28,9 @@ services:
       POSTGRES_HOST_AUTH_METHOD: trust
       POSTGRES_USER: loupe
     volumes:
-      - pgvector-data:/var/lib/postgresql/data
+      - pgvector18-data:/var/lib/postgresql
 
 volumes:
   qdrant-data:
   weaviate-data:
-  pgvector-data:
+  pgvector18-data:

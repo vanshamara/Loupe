@@ -3,6 +3,7 @@ import unittest
 import numpy as np
 
 from bench import benchmark_common
+from bench import http_common
 from bench import pgvector_baseline
 from bench import qdrant_baseline
 from bench import weaviate_baseline
@@ -50,7 +51,7 @@ class CompetitorAdapterTests(unittest.TestCase):
 
         self.assertIn("ContainsAny", graphql)
         self.assertIn("filter_ids", graphql)
-        self.assertIn("valueIntArray: [1, 3, 5]", graphql)
+        self.assertIn("valueInt: [1, 3, 5]", graphql)
 
     def test_pgvector_identifier_rejects_unsafe_table_names(self):
         with self.assertRaises(ValueError):
@@ -60,6 +61,21 @@ class CompetitorAdapterTests(unittest.TestCase):
         literal = benchmark_common.vector_literal([1.0, 2.5, 3.0])
 
         self.assertEqual(literal, "[1,2.5,3]")
+
+    def test_ready_check_accepts_plain_text_response(self):
+        class PlainTextClient(http_common.JsonClient):
+            def __init__(self):
+                pass
+
+            def request(self, method, path, payload=None, expected=(200,), decode_json=True):
+                self.decode_json = decode_json
+                return {}
+
+        client = PlainTextClient()
+
+        client.wait_until_ready("/readyz", attempts=1, sleep_secs=0.0)
+
+        self.assertFalse(client.decode_json)
 
 
 if __name__ == "__main__":

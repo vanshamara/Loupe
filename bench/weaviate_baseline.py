@@ -123,7 +123,7 @@ def weaviate_where(allowed_ids: np.ndarray, total_count: int) -> Optional[str]:
     return (
         "{path: [\"filter_ids\"], "
         "operator: ContainsAny, "
-        f"valueIntArray: [{values}]}}"
+        f"valueInt: [{values}]}}"
     )
 
 

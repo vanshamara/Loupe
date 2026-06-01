@@ -24,6 +24,7 @@ class JsonClient:
         path: str,
         payload: Optional[dict] = None,
         expected: Sequence[int] = (200,),
+        decode_json: bool = True,
     ) -> dict:
         body = None
         headers = {}
@@ -47,7 +48,7 @@ class JsonClient:
             text = data.decode("utf-8", errors="replace")
             raise HttpError(f"{method} {path} returned {status}: {text}")
 
-        if not data:
+        if not data or not decode_json:
             return {}
 
         return json.loads(data.decode("utf-8"))
@@ -63,7 +64,7 @@ class JsonClient:
 
         for _ in range(attempts):
             try:
-                self.request("GET", path, expected=expected)
+                self.request("GET", path, expected=expected, decode_json=False)
                 return
             except Exception as error:
                 last_error = error

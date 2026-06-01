@@ -8,3 +8,8 @@ loupe-distance = { path = "../distance" }
 loupe-storage = { path = "../storage" }
 loupe-trace = { path = "../trace" }
 roaring = "0.10"
+serde = { version = "1", features = ["derive"] }
+bincode = "1"
+
+[dev-dependencies]
+tempfile = "3"

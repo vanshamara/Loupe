@@ -1,9 +1,14 @@
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashSet};
+use std::io;
 
 use loupe_distance::Metric;
-use loupe_storage::{InMemoryVectorStore, StorageAccessor, VectorId};
+use loupe_storage::{
+    InMemoryVectorStore, MmapVectorStore, StorageAccessor, VectorId, VectorStore,
+    write_vector_segment,
+};
 use roaring::RoaringBitmap;
+use serde::{Deserialize, Serialize};
 
 use loupe_trace::{
     NodeStatus, TRACE_EXPORT_VERSION, TraceEdge, TraceGraphExport, TraceGraphLimits, TraceNode,
@@ -86,6 +91,7 @@ impl GraphCollector {
 /// and on layer 0. `ef_construction` and `ef_search` are the beam widths used
 /// while building and while querying, where a wider beam means better results and
 /// more work. `seed` keeps builds reproducible.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct HnswConfig {
     pub m: usize,
     pub m_max: usize,
@@ -167,12 +173,22 @@ pub enum FilteredStrategy {
     Acorn,
 }
 
+/// The parts of the graph that get written to and read from the graph segment.
+type GraphParts = (
+    Metric,
+    HnswConfig,
+    Vec<Vec<Vec<VectorId>>>,
+    Vec<usize>,
+    Option<VectorId>,
+    usize,
+);
+
 /// A multi-layer HNSW index built on top of an in-memory vector store. Each node
 /// sits in layer 0 and, with falling probability, in higher layers that act as
 /// express lanes for search. Vectors are read through the storage accessor, so
 /// the search code will not change when the store moves to memory-mapped files.
 pub struct HnswIndex {
-    store: InMemoryVectorStore,
+    store: VectorStore,
     metric: Metric,
     config: HnswConfig,
     level_multiplier: f32,
@@ -189,7 +205,7 @@ impl HnswIndex {
         let level_multiplier = 1.0 / (config.m as f32).ln();
         let rng = Rng::new(config.seed);
         Self {
-            store: InMemoryVectorStore::new(dim),
+            store: VectorStore::InMemory(InMemoryVectorStore::new(dim)),
             metric,
             config,
             level_multiplier,
@@ -225,11 +241,54 @@ impl HnswIndex {
         self.metric
     }
 
+    /// Writes the index to a vector segment and a graph segment. The pair can be
+    /// reopened with `open` and searched without loading the vectors into RAM.
+    pub fn seal(&self, vector_path: &str, graph_path: &str) -> io::Result<()> {
+        write_vector_segment(vector_path, &self.store)?;
+        let graph: (&Metric, &HnswConfig, _, _, _, _) = (
+            &self.metric,
+            &self.config,
+            &self.neighbors,
+            &self.levels,
+            &self.entry_point,
+            &self.max_level,
+        );
+        let bytes = bincode::serialize(&graph)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+        std::fs::write(graph_path, bytes)
+    }
+
+    /// Opens an index sealed by `seal`. The vectors are memory-mapped and the graph
+    /// is loaded into memory. The result is read-only.
+    pub fn open(vector_path: &str, graph_path: &str) -> io::Result<Self> {
+        let store = VectorStore::Mmap(MmapVectorStore::open(vector_path)?);
+        let bytes = std::fs::read(graph_path)?;
+        let (metric, config, neighbors, levels, entry_point, max_level): GraphParts =
+            bincode::deserialize(&bytes)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+        let level_multiplier = 1.0 / (config.m as f32).ln();
+        let rng = Rng::new(config.seed);
+        Ok(Self {
+            store,
+            metric,
+            config,
+            level_multiplier,
+            rng,
+            neighbors,
+            levels,
+            entry_point,
+            max_level,
+        })
+    }
+
     /// Adds a vector to the index and returns its id. It gives the node a random
     /// level, walks down the upper layers to a good entry point, then links it to
     /// nearby nodes on each layer it belongs to.
     pub fn insert(&mut self, vector: &[f32]) -> VectorId {
-        let id = self.store.add(vector);
+        let id = match &mut self.store {
+            VectorStore::InMemory(store) => store.add(vector),
+            VectorStore::Mmap(_) => panic!("cannot insert into a sealed index"),
+        };
         let level = self.random_level();
         self.neighbors.push(vec![Vec::new(); level + 1]);
         self.levels.push(level);
@@ -1049,5 +1108,30 @@ mod tests {
             256,
         );
         assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn sealed_index_searches_like_in_memory() {
+        let mut index = HnswIndex::new(2, Metric::L2, HnswConfig::default());
+        for i in 0..200u32 {
+            index.insert(&[i as f32, i as f32]);
+        }
+        let query = [73.0, 73.0];
+        let (memory, _) = index.search(&query, 10);
+
+        let vectors = tempfile::NamedTempFile::new().unwrap();
+        let graph = tempfile::NamedTempFile::new().unwrap();
+        let vector_path = vectors.path().to_str().unwrap();
+        let graph_path = graph.path().to_str().unwrap();
+        index.seal(vector_path, graph_path).unwrap();
+
+        let reopened = HnswIndex::open(vector_path, graph_path).unwrap();
+        assert_eq!(reopened.len(), 200);
+        assert_eq!(reopened.max_level(), index.max_level());
+
+        let (disk, _) = reopened.search(&query, 10);
+        let memory_ids: Vec<VectorId> = memory.iter().map(|n| n.id).collect();
+        let disk_ids: Vec<VectorId> = disk.iter().map(|n| n.id).collect();
+        assert_eq!(memory_ids, disk_ids);
     }
 }

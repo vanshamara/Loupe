@@ -21,7 +21,7 @@ use x86 as backend;
 
 /// How two vectors are compared. Smaller always means closer, so search code can
 /// treat every metric the same way.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Metric {
     L2,
     Dot,

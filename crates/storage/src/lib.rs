@@ -73,6 +73,37 @@ impl StorageAccessor for InMemoryVectorStore {
     }
 }
 
+/// A vector store that is either built in memory or read from a memory-mapped
+/// segment. The index holds one of these so the same search code works whether
+/// the vectors live in RAM or on disk.
+pub enum VectorStore {
+    InMemory(InMemoryVectorStore),
+    Mmap(MmapVectorStore),
+}
+
+impl StorageAccessor for VectorStore {
+    fn len(&self) -> usize {
+        match self {
+            VectorStore::InMemory(store) => store.len(),
+            VectorStore::Mmap(store) => store.len(),
+        }
+    }
+
+    fn dim(&self) -> usize {
+        match self {
+            VectorStore::InMemory(store) => store.dim(),
+            VectorStore::Mmap(store) => store.dim(),
+        }
+    }
+
+    fn vector(&self, id: VectorId) -> &[f32] {
+        match self {
+            VectorStore::InMemory(store) => store.vector(id),
+            VectorStore::Mmap(store) => store.vector(id),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

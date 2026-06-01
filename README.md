@@ -86,7 +86,7 @@ The explaining only means something because the engine under it is real:
 - SIMD distance. NEON on Apple Silicon, AVX on x86, with a plain version as a fallback and a check.
 - mmap storage. Search a sealed index on disk without loading all of it into memory.
 - Write-ahead log. Crash recovery you can prove by killing the process mid-write.
-- Deletes plus manual compaction.
+- Deletes plus tombstone-aware compaction.
 
 ---
 
@@ -104,7 +104,7 @@ The explaining only means something because the engine under it is real:
 | M7 | Disk-backed storage (mmap) | ✅ done |
 | M8 | WAL plus crash recovery | ✅ done |
 | M9 | gRPC API and CLI (EXPLAIN plus advisor) | ✅ done |
-| M10 | Deletes, dead-node-aware search, compaction | 🟡 in progress |
+| M10 | Deletes, dead-node-aware search, compaction | ✅ done |
 | M11 | Cost-based planner | ⬜ |
 | M11.5 | Polish: developer experience and metrics | ⬜ |
 | M12 | (optional) Loupe Graph Explorer, 3D trace view | ⬜ |
@@ -125,6 +125,10 @@ Coming in M5: recall and speed plots against FAISS, Qdrant, Weaviate, and
 pgvector, across the selectivity and correlation grid (synthetic plus arXiv). The
 headline case is 0.1% of rows passing the filter while sitting far from the
 query, where simple filtering falls apart and the planner pays off.
+
+The benchmark runner also includes a compaction probe. It deletes a controlled
+slice of a durable collection, reports tombstoned visits, distance work, latency,
+and WAL bytes, then compacts and reports the same numbers again.
 
 ## EXPLAIN Reference Workflow
 

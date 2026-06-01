@@ -26,12 +26,61 @@ pub use loupe_trace::{ExplainSearch, PlanReport, QueryLogRecord, QuerySummary};
 /// during compaction.
 type LiveRecord = (Vec<f32>, Vec<(String, Value)>);
 
+const LOGICAL_SEGMENT_ID: u32 = 0;
+const DEFAULT_AUTO_COMPACTION_DEAD_FRACTION: f32 = 0.30;
+const DEFAULT_AUTO_COMPACTION_MIN_DELETED: usize = 10_000;
+
 const STRATEGIES: [PlannedStrategy; 4] = [
     PlannedStrategy::Flat,
     PlannedStrategy::PostFilter,
     PlannedStrategy::InTraversal,
     PlannedStrategy::Acorn,
 ];
+
+/// Controls when Loupe rewrites deleted vectors out of the collection.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CompactionConfig {
+    pub dead_fraction_threshold: f32,
+    pub min_deleted: usize,
+}
+
+impl Default for CompactionConfig {
+    fn default() -> Self {
+        Self {
+            dead_fraction_threshold: DEFAULT_AUTO_COMPACTION_DEAD_FRACTION,
+            min_deleted: DEFAULT_AUTO_COMPACTION_MIN_DELETED,
+        }
+    }
+}
+
+/// Live and deleted counts for one logical segment.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SegmentStats {
+    pub id: u32,
+    pub total_count: usize,
+    pub live_count: usize,
+    pub deleted_count: usize,
+    pub dead_fraction: f32,
+}
+
+/// Collection health data used by EXPLAIN, compaction, and future stats output.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CollectionStats {
+    pub total_count: usize,
+    pub live_count: usize,
+    pub deleted_count: usize,
+    pub dead_fraction: f32,
+    pub compaction_recommended: bool,
+    pub segments: Vec<SegmentStats>,
+}
+
+/// The before and after view of one compaction run.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CompactionReport {
+    pub removed: usize,
+    pub before: CollectionStats,
+    pub after: CollectionStats,
+}
 
 /// A set of vectors with metadata, searched through the planner. With a write-ahead
 /// log it survives a crash; without one it lives only in memory.
@@ -44,6 +93,7 @@ pub struct Collection {
     wal: Option<WriteAheadLog>,
     dir: Option<String>,
     fields: Vec<Vec<(String, Value)>>,
+    compaction: CompactionConfig,
 }
 
 impl Collection {
@@ -58,6 +108,7 @@ impl Collection {
             wal: None,
             dir: None,
             fields: Vec::new(),
+            compaction: CompactionConfig::default(),
         }
     }
 
@@ -103,6 +154,11 @@ impl Collection {
         self.planner = planner;
     }
 
+    /// Replaces the automatic compaction trigger.
+    pub fn set_compaction_config(&mut self, config: CompactionConfig) {
+        self.compaction = config;
+    }
+
     /// Adds a vector with its metadata and returns its id. With durability on, the
     /// change is written to the log (and flushed) before it is applied.
     pub fn insert(&mut self, vector: &[f32], fields: &[(&str, Value)]) -> VectorId {
@@ -141,6 +197,31 @@ impl Collection {
         self.index.live_count()
     }
 
+    /// Returns collection and segment counts used to decide when compaction helps.
+    pub fn stats(&self) -> CollectionStats {
+        let total_count = self.index.len();
+        let deleted_count = self.index.deleted_count();
+        let live_count = self.index.live_count();
+        let dead_fraction = dead_fraction(deleted_count, total_count);
+        let compaction_recommended = self.should_compact(deleted_count, dead_fraction);
+        let segment = SegmentStats {
+            id: LOGICAL_SEGMENT_ID,
+            total_count,
+            live_count,
+            deleted_count,
+            dead_fraction,
+        };
+
+        CollectionStats {
+            total_count,
+            live_count,
+            deleted_count,
+            dead_fraction,
+            compaction_recommended,
+            segments: vec![segment],
+        }
+    }
+
     /// Marks a vector deleted. It stays in the graph so search can still walk
     /// through it, but it is never returned. With durability on, the delete is
     /// logged before it is applied. Returns false if the id is unknown or was
@@ -153,7 +234,12 @@ impl Collection {
             wal.append(&WalRecord::Delete { id })
                 .expect("failed to append to the write-ahead log");
         }
-        self.index.delete(id)
+        let deleted = self.index.delete(id);
+        if deleted {
+            self.compact_if_needed()
+                .expect("failed to compact deleted vectors");
+        }
+        deleted
     }
 
     /// Rewrites the index without the tombstoned vectors, reclaiming their space
@@ -161,9 +247,19 @@ impl Collection {
     /// rewrites the log so a later replay rebuilds the compacted collection. Ids
     /// are reassigned in the process. Returns how many vectors were removed.
     pub fn compact(&mut self) -> io::Result<usize> {
+        Ok(self.compact_with_report()?.removed)
+    }
+
+    /// Rewrites deleted vectors away and returns before and after stats.
+    pub fn compact_with_report(&mut self) -> io::Result<CompactionReport> {
+        let before = self.stats();
         let removed = self.index.deleted_count();
         if removed == 0 {
-            return Ok(0);
+            return Ok(CompactionReport {
+                removed,
+                before: before.clone(),
+                after: before,
+            });
         }
 
         let dim = self.index.accessor().dim();
@@ -196,7 +292,22 @@ impl Collection {
         self.index = index;
         self.metadata = metadata;
         self.fields = fields;
-        Ok(removed)
+        let after = self.stats();
+        Ok(CompactionReport {
+            removed,
+            before,
+            after,
+        })
+    }
+
+    /// Runs compaction only when the deleted-vector metric crosses the threshold.
+    pub fn compact_if_needed(&mut self) -> io::Result<Option<CompactionReport>> {
+        let stats = self.stats();
+        if !stats.compaction_recommended {
+            return Ok(None);
+        }
+
+        self.compact_with_report().map(Some)
     }
 
     /// Writes the live vectors to a fresh log and swaps it in with an atomic
@@ -209,18 +320,26 @@ impl Collection {
         let _ = std::fs::remove_file(&tmp_path);
 
         let mut fresh = WriteAheadLog::open(&tmp_path, SyncPolicy::Group)?;
+        fresh.append(&WalRecord::CompactBegin)?;
         for (vector, fields) in live {
             fresh.append(&WalRecord::Insert {
                 vector: vector.clone(),
                 fields: fields.clone(),
             })?;
         }
+        fresh.append(&WalRecord::CompactEnd)?;
         fresh.sync()?;
         drop(fresh);
 
         std::fs::rename(&tmp_path, &wal_path)?;
+        sync_directory(dir)?;
         self.wal = Some(WriteAheadLog::open(&wal_path, SyncPolicy::PerWrite)?);
         Ok(())
+    }
+
+    fn should_compact(&self, deleted_count: usize, dead_fraction: f32) -> bool {
+        deleted_count >= self.compaction.min_deleted
+            && dead_fraction >= self.compaction.dead_fraction_threshold
     }
 
     /// Runs a filtered search with the strategy the planner picks.
@@ -438,6 +557,24 @@ pub fn parse_filter(text: &str) -> Result<Expr, String> {
         field.trim().to_string(),
         Value::Str(value.trim().to_string()),
     ))
+}
+
+fn dead_fraction(deleted_count: usize, total_count: usize) -> f32 {
+    if total_count == 0 {
+        return 0.0;
+    }
+
+    deleted_count as f32 / total_count as f32
+}
+
+#[cfg(unix)]
+fn sync_directory(dir: &str) -> io::Result<()> {
+    std::fs::File::open(dir)?.sync_all()
+}
+
+#[cfg(not(unix))]
+fn sync_directory(_dir: &str) -> io::Result<()> {
+    Ok(())
 }
 
 fn hash_query(query: &[f32]) -> u64 {
@@ -679,6 +816,45 @@ mod tests {
     }
 
     #[test]
+    fn stats_report_live_deleted_and_segment_counts() {
+        let mut collection = anti_collection();
+        collection.delete(10);
+        collection.delete(11);
+
+        let stats = collection.stats();
+
+        assert_eq!(stats.total_count, 200);
+        assert_eq!(stats.live_count, 198);
+        assert_eq!(stats.deleted_count, 2);
+        assert_eq!(stats.segments.len(), 1);
+        assert_eq!(stats.segments[0].id, LOGICAL_SEGMENT_ID);
+        assert_eq!(stats.segments[0].deleted_count, 2);
+        assert!(!stats.compaction_recommended);
+    }
+
+    #[test]
+    fn delete_triggers_compaction_when_threshold_crosses() {
+        let mut collection = Collection::new(2, Metric::L2);
+        collection.set_compaction_config(CompactionConfig {
+            dead_fraction_threshold: 0.2,
+            min_deleted: 4,
+        });
+        for i in 0..20u32 {
+            collection.insert(&[i as f32, i as f32], &[("cat", Value::Str("a".into()))]);
+        }
+
+        collection.delete(0);
+        collection.delete(1);
+        collection.delete(2);
+        assert_eq!(collection.deleted_count(), 3);
+
+        collection.delete(3);
+        assert_eq!(collection.deleted_count(), 0);
+        assert_eq!(collection.len(), 16);
+        assert_eq!(collection.live_count(), 16);
+    }
+
+    #[test]
     fn compaction_drops_deleted_and_keeps_live() {
         let mut collection = anti_collection();
         for id in 0..40u32 {
@@ -736,6 +912,28 @@ mod tests {
         let filter = Expr::Eq("cat".into(), Value::Str("a".into()));
         let (results, _) = recovered.search(&[5.0, 5.0], &filter, 3);
         assert_eq!(results.len(), 3);
+    }
+
+    #[test]
+    fn compaction_writes_checkpoint_markers() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_str().unwrap();
+        {
+            let mut collection = Collection::open(path, 2, Metric::L2).unwrap();
+            for i in 0..10u32 {
+                collection.insert(&[i as f32, i as f32], &[("cat", Value::Str("a".into()))]);
+            }
+            collection.delete(0);
+            collection.delete(1);
+            collection.delete(2);
+            assert_eq!(collection.compact().unwrap(), 3);
+        }
+
+        let wal_path = format!("{path}/wal.log");
+        let records = WriteAheadLog::replay(&wal_path).unwrap();
+        assert!(matches!(records.first(), Some(WalRecord::CompactBegin)));
+        assert!(matches!(records.last(), Some(WalRecord::CompactEnd)));
+        assert_eq!(records.len(), 9);
     }
 
     #[test]

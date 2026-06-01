@@ -1,6 +1,7 @@
 //! Loading helpers and recall scoring for the benchmark datasets.
 
 pub mod arxiv;
+pub mod compaction;
 pub mod filters;
 pub mod matrix;
 

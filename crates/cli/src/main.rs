@@ -239,10 +239,18 @@ fn compact(dir: &str) -> io::Result<()> {
     let manifest: Manifest = serde_json::from_str(&std::fs::read_to_string(manifest_path(dir))?)
         .map_err(io::Error::other)?;
     let mut collection = Collection::open(dir, manifest.dim, manifest.metric)?;
-    let removed = collection.compact()?;
+    let report = collection.compact_with_report()?;
     println!(
-        "compacted: removed {removed} deleted vectors, {} remain",
-        collection.len()
+        "compacted: removed {} deleted vectors, {} remain",
+        report.removed, report.after.live_count
+    );
+    println!(
+        "before: total={} live={} deleted={}",
+        report.before.total_count, report.before.live_count, report.before.deleted_count
+    );
+    println!(
+        "after:  total={} live={} deleted={}",
+        report.after.total_count, report.after.live_count, report.after.deleted_count
     );
     Ok(())
 }

@@ -1,6 +1,7 @@
 use std::env;
 use std::time::Instant;
 
+use loupe_bench::compaction::{print_compaction_probe, run_compaction_probe};
 use loupe_bench::matrix::{
     MatrixConfig, print_matrix, print_planner_summary, run_matrix, summarize_planner,
 };
@@ -104,6 +105,11 @@ fn main() {
 
     let _ = std::fs::remove_file(vector_path);
     let _ = std::fs::remove_file(graph_path);
+
+    println!();
+    println!("=== compaction probe (synthetic L2) ===");
+    let compaction = run_compaction_probe(1000, 2);
+    print_compaction_probe(&compaction);
 }
 
 fn build_index(base: &[Vec<f32>], dim: usize, metric: Metric) -> HnswIndex {

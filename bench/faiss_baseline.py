@@ -66,19 +66,26 @@ def run_matrix(
     base: np.ndarray,
     queries: np.ndarray,
     config: MatrixConfig,
+    progress_every_queries: int = 0,
 ) -> List[MatrixRow]:
     rows = []
     query_count = max(queries.shape[0], 1)
+    total_cells = len(SELECTIVITY_LEVELS) * len(CORRELATION_MODES)
+    cell_index = 0
     index.hnsw.efSearch = config.ef_search
 
     for selectivity in SELECTIVITY_LEVELS:
         for correlation in CORRELATION_MODES:
+            cell_index += 1
+            cell_start = time.perf_counter()
+            print_matrix_cell_start(cell_index, total_cells, selectivity, correlation)
+
             recall_sum = 0.0
             candidate_sum = 0.0
             latency_sum = 0.0
             returned_sum = 0.0
 
-            for query in queries:
+            for query_index, query in enumerate(queries, start=1):
                 allowed_ids = generate_filter(
                     base,
                     query,
@@ -98,6 +105,14 @@ def run_matrix(
                 candidate_sum += candidates
                 latency_sum += latency_micros
                 returned_sum += len(results)
+                print_matrix_query_progress(
+                    cell_index,
+                    total_cells,
+                    query_index,
+                    queries.shape[0],
+                    progress_every_queries,
+                    time.perf_counter() - cell_start,
+                )
 
             rows.append(
                 MatrixRow(
@@ -112,8 +127,60 @@ def run_matrix(
                     returned_count=returned_sum / query_count,
                 )
             )
+            print_matrix_cell_done(
+                cell_index,
+                total_cells,
+                time.perf_counter() - cell_start,
+            )
 
     return rows
+
+
+def print_matrix_cell_start(
+    cell_index: int,
+    total_cells: int,
+    selectivity: float,
+    correlation: str,
+) -> None:
+    print(
+        f"[faiss matrix] cell {cell_index}/{total_cells} start: selectivity={selectivity * 100.0:.1f}% correlation={correlation}",
+        flush=True,
+    )
+
+
+def print_matrix_query_progress(
+    cell_index: int,
+    total_cells: int,
+    completed_queries: int,
+    total_queries: int,
+    progress_every_queries: int,
+    elapsed_seconds: float,
+) -> None:
+    if progress_every_queries <= 0 or total_queries == 0:
+        return
+
+    should_print = (
+        completed_queries == total_queries
+        or completed_queries % progress_every_queries == 0
+    )
+    if not should_print:
+        return
+
+    print(
+        f"[faiss matrix] cell {cell_index}/{total_cells}: query {completed_queries}/{total_queries}, elapsed {elapsed_seconds:.1f}s",
+        flush=True,
+    )
+
+
+def print_matrix_cell_done(
+    cell_index: int,
+    total_cells: int,
+    elapsed_seconds: float,
+) -> None:
+    print(
+        f"[faiss matrix] cell {cell_index}/{total_cells} done in {elapsed_seconds:.1f}s",
+        flush=True,
+    )
 
 
 def search_faiss_post_filter(
@@ -183,7 +250,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         ef_search=args.ef_search,
         seed=args.seed,
     )
-    rows = run_matrix(index, base, queries, config)
+    rows = run_matrix(index, base, queries, config, progress_every_queries=10)
     write_csv(args.out, rows)
     print(f"faiss CSV: {args.out}")
     return 0

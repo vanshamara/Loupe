@@ -3,6 +3,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 use std::io;
+use std::io::Write;
 use std::time::Instant;
 
 use loupe_distance::Metric;
@@ -52,6 +53,13 @@ pub struct MatrixConfig {
     pub seed: u64,
 }
 
+/// Runtime behavior for long matrix runs.
+#[derive(Default)]
+pub struct MatrixRunOptions<'a> {
+    pub progress_every_queries: usize,
+    pub incremental_csv_path: Option<&'a str>,
+}
+
 /// One row of the matrix: a strategy's result in a single cell.
 #[derive(Clone, Debug)]
 pub struct CellResult {
@@ -78,6 +86,24 @@ pub fn run_matrix(
     run_matrix_with_planner(index, base, queries, metric, config, &planner, 32)
 }
 
+/// Runs every fixed strategy plus the planner while reporting progress and
+/// optionally flushing matrix CSV rows after each completed cell.
+pub fn run_matrix_with_options(
+    index: &HnswIndex,
+    base: &[Vec<f32>],
+    queries: &[Vec<f32>],
+    metric: Metric,
+    config: &MatrixConfig,
+    options: &MatrixRunOptions<'_>,
+) -> io::Result<Vec<CellResult>> {
+    let planner = PlannerConfig::default();
+    let settings = MatrixPlannerSettings {
+        samples: 32,
+        options,
+    };
+    run_matrix_with_planner_and_options(index, base, queries, metric, config, &planner, settings)
+}
+
 /// Runs every fixed strategy plus the planner in every matrix cell.
 pub fn run_matrix_with_planner(
     index: &HnswIndex,
@@ -88,11 +114,43 @@ pub fn run_matrix_with_planner(
     planner: &PlannerConfig,
     samples: usize,
 ) -> Vec<CellResult> {
+    let options = MatrixRunOptions::default();
+    let settings = MatrixPlannerSettings {
+        samples,
+        options: &options,
+    };
+    run_matrix_with_planner_and_options(index, base, queries, metric, config, planner, settings)
+        .expect("default matrix options should not fail")
+}
+
+struct MatrixPlannerSettings<'a, 'b> {
+    samples: usize,
+    options: &'a MatrixRunOptions<'b>,
+}
+
+fn run_matrix_with_planner_and_options(
+    index: &HnswIndex,
+    base: &[Vec<f32>],
+    queries: &[Vec<f32>],
+    metric: Metric,
+    config: &MatrixConfig,
+    planner: &PlannerConfig,
+    settings: MatrixPlannerSettings<'_, '_>,
+) -> io::Result<Vec<CellResult>> {
     let mut results = Vec::new();
     let query_count = queries.len().max(1) as f64;
+    let total_cells = SELECTIVITY_LEVELS.len() * CORRELATION_MODES.len();
+    let mut cell_index = 0usize;
+    let mut csv_file = incremental_matrix_csv_file(settings.options.incremental_csv_path)?;
 
     for &selectivity in &SELECTIVITY_LEVELS {
         for &correlation in &CORRELATION_MODES {
+            cell_index += 1;
+            let cell_start = Instant::now();
+            if should_report_matrix_progress(settings.options) {
+                print_matrix_cell_start(cell_index, total_cells, selectivity, correlation);
+            }
+
             let mut recall_sum = [0.0f64; MATRIX_RUNNERS.len()];
             let mut comps_sum = [0.0f64; MATRIX_RUNNERS.len()];
             let mut latency_sum = [0.0f64; MATRIX_RUNNERS.len()];
@@ -100,7 +158,7 @@ pub fn run_matrix_with_planner(
             let mut chosen_counts: Vec<BTreeMap<String, usize>> =
                 vec![BTreeMap::new(); MATRIX_RUNNERS.len()];
 
-            for query in queries {
+            for (query_index, query) in queries.iter().enumerate() {
                 let allowed =
                     generate_filter(base, query, metric, selectivity, correlation, config.seed);
                 let oracle_start = Instant::now();
@@ -116,9 +174,14 @@ pub fn run_matrix_with_planner(
                             latency_micros: oracle_latency,
                             strategy_chosen: strategy_name(strategy).to_string(),
                         },
-                        Strategy::Planner => {
-                            run_planner_strategy(index, query, &allowed, config, planner, samples)
-                        }
+                        Strategy::Planner => run_planner_strategy(
+                            index,
+                            query,
+                            &allowed,
+                            config,
+                            planner,
+                            settings.samples,
+                        ),
                         _ => run_strategy(index, strategy, query, &allowed, config),
                     };
                     recall_sum[slot] += f64::from(overlap(&outcome.results, &oracle_ids));
@@ -129,10 +192,20 @@ pub fn run_matrix_with_planner(
                         .entry(outcome.strategy_chosen)
                         .or_default() += 1;
                 }
+
+                print_matrix_query_progress(
+                    cell_index,
+                    total_cells,
+                    query_index + 1,
+                    queries.len(),
+                    settings.options.progress_every_queries,
+                    cell_start.elapsed().as_secs_f64(),
+                );
             }
 
+            let mut cell_results = Vec::new();
             for (slot, &strategy) in MATRIX_RUNNERS.iter().enumerate() {
-                results.push(CellResult {
+                cell_results.push(CellResult {
                     selectivity,
                     correlation,
                     strategy,
@@ -143,9 +216,26 @@ pub fn run_matrix_with_planner(
                     avg_returned: returned_sum[slot] / query_count,
                 });
             }
+
+            if let Some(file) = &mut csv_file {
+                for row in &cell_results {
+                    write_matrix_csv_row(file, row)?;
+                }
+                file.flush()?;
+            }
+
+            if should_report_matrix_progress(settings.options) {
+                print_matrix_cell_done(
+                    cell_index,
+                    total_cells,
+                    cell_start.elapsed().as_secs_f64(),
+                    settings.options.incremental_csv_path,
+                );
+            }
+            results.extend(cell_results);
         }
     }
-    results
+    Ok(results)
 }
 
 struct StrategyOutcome {
@@ -231,23 +321,102 @@ pub fn write_matrix_csv(path: &str, results: &[CellResult]) -> io::Result<()> {
 
 /// Returns matrix results as CSV text.
 pub fn matrix_csv(results: &[CellResult]) -> String {
-    let mut csv = String::from(
-        "engine,selectivity,correlation,runner,strategy_chosen,recall,distance_computations,latency_micros,returned_count\n",
-    );
+    let mut csv = String::from(matrix_csv_header());
     for row in results {
-        csv.push_str(&format!(
-            "loupe,{:.6},{},{},{},{:.6},{:.3},{:.3},{:.3}\n",
-            row.selectivity,
-            correlation_name(row.correlation),
-            strategy_name(row.strategy),
-            row.strategy_chosen,
-            row.recall,
-            row.avg_distance_computations,
-            row.avg_latency_micros,
-            row.avg_returned
-        ));
+        csv.push_str(&matrix_csv_row(row));
     }
     csv
+}
+
+fn incremental_matrix_csv_file(path: Option<&str>) -> io::Result<Option<std::fs::File>> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+
+    let mut file = std::fs::File::create(path)?;
+    file.write_all(matrix_csv_header().as_bytes())?;
+    file.flush()?;
+    Ok(Some(file))
+}
+
+fn matrix_csv_header() -> &'static str {
+    "engine,selectivity,correlation,runner,strategy_chosen,recall,distance_computations,latency_micros,returned_count\n"
+}
+
+fn write_matrix_csv_row(writer: &mut impl Write, row: &CellResult) -> io::Result<()> {
+    writer.write_all(matrix_csv_row(row).as_bytes())
+}
+
+fn matrix_csv_row(row: &CellResult) -> String {
+    format!(
+        "loupe,{:.6},{},{},{},{:.6},{:.3},{:.3},{:.3}\n",
+        row.selectivity,
+        correlation_name(row.correlation),
+        strategy_name(row.strategy),
+        row.strategy_chosen,
+        row.recall,
+        row.avg_distance_computations,
+        row.avg_latency_micros,
+        row.avg_returned
+    )
+}
+
+fn print_matrix_cell_start(
+    cell_index: usize,
+    total_cells: usize,
+    selectivity: f32,
+    correlation: Correlation,
+) {
+    println!(
+        "[matrix] cell {cell_index}/{total_cells} start: selectivity={:.1}% correlation={}",
+        selectivity * 100.0,
+        correlation_name(correlation)
+    );
+    let _ = io::stdout().flush();
+}
+
+fn should_report_matrix_progress(options: &MatrixRunOptions<'_>) -> bool {
+    options.progress_every_queries > 0 || options.incremental_csv_path.is_some()
+}
+
+fn print_matrix_query_progress(
+    cell_index: usize,
+    total_cells: usize,
+    completed_queries: usize,
+    total_queries: usize,
+    progress_every_queries: usize,
+    elapsed_secs: f64,
+) {
+    if progress_every_queries == 0 || total_queries == 0 {
+        return;
+    }
+
+    let should_print = completed_queries == total_queries
+        || completed_queries.is_multiple_of(progress_every_queries);
+    if !should_print {
+        return;
+    }
+
+    println!(
+        "[matrix] cell {cell_index}/{total_cells}: query {completed_queries}/{total_queries}, elapsed {elapsed_secs:.1}s"
+    );
+    let _ = io::stdout().flush();
+}
+
+fn print_matrix_cell_done(
+    cell_index: usize,
+    total_cells: usize,
+    elapsed_secs: f64,
+    csv_path: Option<&str>,
+) {
+    if let Some(path) = csv_path {
+        println!(
+            "[matrix] cell {cell_index}/{total_cells} done in {elapsed_secs:.1}s, CSV updated: {path}"
+        );
+    } else {
+        println!("[matrix] cell {cell_index}/{total_cells} done in {elapsed_secs:.1}s");
+    }
+    let _ = io::stdout().flush();
 }
 
 /// Writes planner comparison results as CSV for M11 calibration.
@@ -798,6 +967,32 @@ mod tests {
             "engine,selectivity,correlation,runner,strategy_chosen,recall,distance_computations,latency_micros,returned_count\n"
         ));
         assert!(csv.contains("loupe,0.010000,anti_correlated,Planner,Acorn+AdaptiveEf"));
+    }
+
+    #[test]
+    fn matrix_options_write_incremental_csv() {
+        let (index, base, queries) = small_setup();
+        let path = std::env::temp_dir().join(format!(
+            "loupe-matrix-incremental-{}.csv",
+            std::process::id()
+        ));
+        let path_text = path.to_string_lossy().to_string();
+        let options = MatrixRunOptions {
+            progress_every_queries: 0,
+            incremental_csv_path: Some(&path_text),
+        };
+
+        let results =
+            run_matrix_with_options(&index, &base, &queries, Metric::L2, &config(), &options)
+                .expect("matrix should run");
+        let csv = std::fs::read_to_string(&path).expect("CSV should exist");
+
+        assert!(csv.starts_with(
+            "engine,selectivity,correlation,runner,strategy_chosen,recall,distance_computations,latency_micros,returned_count\n"
+        ));
+        assert_eq!(csv.lines().count(), results.len() + 1);
+
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

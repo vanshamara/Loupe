@@ -97,12 +97,15 @@ def run_suite(
         run_preflight(config, executor)
 
     try:
+        print_suite_start(config)
+
         if started_services:
             run_command(docker_up_command(config, started_services), config, executor)
 
-        for engine in config.engines:
+        for index, engine in enumerate(config.engines, start=1):
             csv_path = matrix_csv_path(config, engine)
             csv_paths.append(csv_path)
+            print_engine_start(engine, index, len(config.engines), csv_path)
 
             if engine == "loupe":
                 plot_dir = config.work_dir / "loupe-plots"
@@ -114,10 +117,13 @@ def run_suite(
                 command = adapter_command(config, engine, csv_path)
 
             run_command(command, config, executor)
+            print_engine_done(engine, csv_path)
 
         comparison_dir = config.work_dir / "comparison-plots"
         plot_dirs.append(comparison_dir)
+        print_stage(f"writing comparison plots to {comparison_dir}")
         run_command(comparison_command(config, csv_paths, comparison_dir), config, executor)
+        print_stage(f"packaging benchmark result {checked_run_id}")
         run_command(
             package_command(
                 config,
@@ -403,6 +409,39 @@ def run_command(
         return
 
     executor(command, config.repo_root)
+
+
+def print_suite_start(config: SuiteConfig) -> None:
+    engines = ",".join(config.engines)
+    query_text = "all queries"
+    if config.query_limit is not None:
+        query_text = f"{config.query_limit} queries"
+
+    print(
+        f"== benchmark suite: run_id={config.run_id} dataset={config.dataset_name} engines={engines} query_limit={query_text} ==",
+        flush=True,
+    )
+    print(f"== work dir: {config.work_dir} ==", flush=True)
+
+
+def print_engine_start(
+    engine: str,
+    index: int,
+    total: int,
+    csv_path: Path,
+) -> None:
+    print(
+        f"== engine {index}/{total}: {engine} start, CSV={csv_path} ==",
+        flush=True,
+    )
+
+
+def print_engine_done(engine: str, csv_path: Path) -> None:
+    print(f"== engine done: {engine}, CSV={csv_path} ==", flush=True)
+
+
+def print_stage(message: str) -> None:
+    print(f"== {message} ==", flush=True)
 
 
 def subprocess_executor(command: Sequence[str], cwd: Path) -> None:

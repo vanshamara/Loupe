@@ -3,8 +3,8 @@ use std::time::Instant;
 
 use loupe_bench::compaction::{print_compaction_probe, run_compaction_probe};
 use loupe_bench::matrix::{
-    MatrixConfig, print_matrix, print_planner_summary, run_matrix, summarize_planner,
-    write_matrix_csv, write_planner_summary_csv,
+    MatrixConfig, MatrixRunOptions, print_matrix, print_planner_summary, run_matrix_with_options,
+    summarize_planner, write_planner_summary_csv,
 };
 use loupe_bench::plots::write_loupe_plots;
 use loupe_bench::{read_fvecs, read_ivecs, recall_at_k};
@@ -69,10 +69,21 @@ fn main() {
         max_ef: 512,
         seed: 1,
     };
-    let cells = run_matrix(&l2_index, &base, &queries, Metric::L2, &matrix_config);
+    let matrix_options = MatrixRunOptions {
+        progress_every_queries: 10,
+        incremental_csv_path: args.matrix_csv_path.as_deref(),
+    };
+    let cells = run_matrix_with_options(
+        &l2_index,
+        &base,
+        &queries,
+        Metric::L2,
+        &matrix_config,
+        &matrix_options,
+    )
+    .expect("failed to run matrix");
     print_matrix(&cells);
     if let Some(path) = &args.matrix_csv_path {
-        write_matrix_csv(path, &cells).expect("failed to write matrix CSV");
         println!("matrix CSV: {path}");
     }
     if let Some(dir) = &args.plot_dir {

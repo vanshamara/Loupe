@@ -359,6 +359,10 @@ Loupe runs also include a planner summary CSV in the result bundle.
 It uses the first 10 query rows by default so larger datasets finish in a
 reasonable time. Use `--query-limit 0` for every query row, and use
 `--engines loupe,faiss` for a no-Docker run.
+Long Loupe and FAISS runs print matrix cell and query progress. Loupe also
+flushes its matrix CSV after each completed cell, so you can check the partial
+file under `/tmp/loupe-benchmark-suite/<run-id>/loupe-matrix.csv` while an
+overnight run is still active.
 
 Run the first external baseline with FAISS:
 

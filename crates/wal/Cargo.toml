@@ -1,0 +1,14 @@
+[package]
+name = "loupe-wal"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+loupe-storage = { path = "../storage" }
+loupe-filter = { path = "../filter" }
+serde = { version = "1", features = ["derive"] }
+bincode = "1"
+crc32fast = "1"
+
+[dev-dependencies]
+tempfile = "3"

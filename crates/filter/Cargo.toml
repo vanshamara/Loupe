@@ -6,3 +6,4 @@ edition.workspace = true
 [dependencies]
 loupe-storage = { path = "../storage" }
 roaring = "0.10"
+serde = { version = "1", features = ["derive"] }

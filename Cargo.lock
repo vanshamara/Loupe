@@ -127,6 +127,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
+name = "crc32fast"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9481c1c90cbf2ac953f07c8d4a58aa3945c425b7185c9154d67a65e4230da511"
+dependencies = [
+ "cfg-if",
+]
+
+[[package]]
 name = "criterion"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -360,6 +369,7 @@ version = "0.1.0"
 dependencies = [
  "loupe-storage",
  "roaring",
+ "serde",
 ]
 
 [[package]]
@@ -400,6 +410,18 @@ dependencies = [
  "loupe-storage",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "loupe-wal"
+version = "0.1.0"
+dependencies = [
+ "bincode",
+ "crc32fast",
+ "loupe-filter",
+ "loupe-storage",
+ "serde",
+ "tempfile",
 ]
 
 [[package]]

@@ -6,6 +6,7 @@ members = [
     "crates/trace",
     "crates/filter",
     "crates/planner",
+    "crates/wal",
     "crates/hnsw",
     "crates/engine",
     "bench",

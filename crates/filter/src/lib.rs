@@ -10,7 +10,7 @@ use roaring::RoaringBitmap;
 
 /// A metadata value attached to a vector. Strings cover labels like a tenant id or
 /// a document type; integers cover things like a year or a timestamp.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Value {
     Int(i64),
     Str(String),

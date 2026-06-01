@@ -1,0 +1,3 @@
+planner,mean_recall,mean_distance_computations,regret,regret_delta
+RuleLadder,0.995100,859.812,0.139500,0.000000
+CostModel,0.995100,859.812,0.139500,0.000000

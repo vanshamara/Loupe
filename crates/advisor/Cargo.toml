@@ -1,0 +1,7 @@
+[package]
+name = "loupe-advisor"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+loupe-trace = { path = "../trace" }

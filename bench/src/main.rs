@@ -77,6 +77,33 @@ fn main() {
         32,
     );
     print_planner_summary(&summary);
+
+    println!();
+    println!("=== memory-mapped index (L2) ===");
+    let temp = std::env::temp_dir();
+    let vector_path = temp.join("loupe_sift.vec");
+    let graph_path = temp.join("loupe_sift.graph");
+    let vector_path = vector_path.to_str().unwrap();
+    let graph_path = graph_path.to_str().unwrap();
+    l2_index
+        .seal(vector_path, graph_path)
+        .expect("failed to seal index");
+    let vector_bytes = std::fs::metadata(vector_path).map(|m| m.len()).unwrap_or(0);
+    let graph_bytes = std::fs::metadata(graph_path).map(|m| m.len()).unwrap_or(0);
+
+    let reopened = HnswIndex::open(vector_path, graph_path).expect("failed to open sealed index");
+    let disk_start = Instant::now();
+    let (disk_results, _) = run_queries(&reopened, &queries);
+    let disk_qps = queries.len() as f64 / disk_start.elapsed().as_secs_f64();
+    let disk_recall = recall_at_k(&disk_results, &l2_truth, K);
+
+    println!("vector segment:    {:.1} MB", vector_bytes as f64 / 1e6);
+    println!("graph segment:     {:.1} MB", graph_bytes as f64 / 1e6);
+    println!("disk queries/sec:  {disk_qps:.0}");
+    println!("recall@{K} (disk):   {disk_recall:.4}");
+
+    let _ = std::fs::remove_file(vector_path);
+    let _ = std::fs::remove_file(graph_path);
 }
 
 fn build_index(base: &[Vec<f32>], dim: usize, metric: Metric) -> HnswIndex {

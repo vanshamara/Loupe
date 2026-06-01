@@ -12,13 +12,14 @@ use loupe_planner::{
     estimate_correlation,
 };
 use loupe_storage::VectorId;
-use loupe_trace::{ExplainSearch, PlanReport, QuerySummary, SearchTrace};
+use loupe_trace::SearchTrace;
 use loupe_wal::{SyncPolicy, WalRecord, WriteAheadLog};
 use roaring::RoaringBitmap;
 
 pub use loupe_filter::{Expr, Value};
 pub use loupe_hnsw::Neighbor;
 pub use loupe_planner::{Plan, PlannedStrategy};
+pub use loupe_trace::{ExplainSearch, PlanReport, QuerySummary};
 
 const STRATEGIES: [PlannedStrategy; 4] = [
     PlannedStrategy::Flat,

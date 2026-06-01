@@ -9,6 +9,7 @@ members = [
     "crates/wal",
     "crates/hnsw",
     "crates/engine",
+    "crates/cli",
     "bench",
 ]
 

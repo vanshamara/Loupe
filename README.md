@@ -103,7 +103,7 @@ The explaining only means something because the engine under it is real:
 | M6 | Query-log advisor | ⬜ |
 | M7 | Disk-backed storage (mmap) | ✅ done |
 | M8 | WAL plus crash recovery | ✅ done |
-| M9 | gRPC API and CLI (EXPLAIN plus advisor) | ⬜ |
+| M9 | gRPC API and CLI (EXPLAIN plus advisor) | 🟡 in progress |
 | M10 | Deletes, dead-node-aware search, compaction | ⬜ |
 | M11 | Cost-based planner | ⬜ |
 | M11.5 | Polish: developer experience and metrics | ⬜ |
@@ -128,8 +128,33 @@ query, where simple filtering falls apart and the planner pays off.
 
 ## EXPLAIN demo
 
-Coming in M4: `loupe explain-search` on a hard filter, showing the chosen plan,
-why it was chosen, and what the rejected plans would have cost.
+Build a durable collection from an embedded corpus, then explain a filtered query.
+Run the commands with `cargo run -p loupe-cli --bin loupe -- <args>`, or
+`cargo install --path crates/cli` to get a `loupe` binary.
+
+```
+loupe build --base datasets/arxiv/arxiv_base.jsonl --dir /tmp/loupe-arxiv
+loupe explain --dir /tmp/loupe-arxiv --query datasets/arxiv/arxiv_query.jsonl \
+  --index 0 --filter "category=math.PR"
+```
+
+That filter matches 8.5% of the papers and sits far from the query in embedding
+space (naturally anti-correlated). The planner sees that and picks Flat, and the
+counterfactual shows what the other plans would have cost:
+
+```
+chosen plan: Flat
+plan            chosen   dist/query  returned recall (proxy)
+Flat               yes          145        10          1.000
+PostFilter                      658         0          0.000
+InTraversal                    1726        10          1.000
+Acorn                          1726        10          1.000
+risk flags: anti_correlated_filter, post_filter_under_returns
+```
+
+PostFilter would have returned nothing. The traversal strategies would have cost
+twelve times more for the same answer. Flat is exact and cheapest here, and you
+can see why.
 
 ## Quickstart
 

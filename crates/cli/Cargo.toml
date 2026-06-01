@@ -1,0 +1,15 @@
+[package]
+name = "loupe-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "loupe"
+path = "src/main.rs"
+
+[dependencies]
+loupe-engine = { path = "../engine" }
+loupe-distance = { path = "../distance" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }

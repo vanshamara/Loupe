@@ -9,7 +9,10 @@ use std::io::{self, Write};
 use clap::{Parser, Subcommand};
 use loupe_advisor::advise;
 use loupe_distance::Metric;
-use loupe_engine::{Collection, ExplainSearch, PlanReport, QueryLogRecord, Value, parse_filter};
+use loupe_engine::{
+    Collection, CollectionStats, ExplainSearch, PlanReport, QueryLogRecord, SegmentStats, Value,
+    parse_filter,
+};
 use loupe_planner::PlannerConfig;
 use serde::{Deserialize, Serialize};
 
@@ -82,6 +85,11 @@ enum Command {
         #[arg(long)]
         dir: String,
     },
+    /// Print collection health stats and compaction signals.
+    Stats {
+        #[arg(long)]
+        dir: String,
+    },
 }
 
 #[derive(Deserialize)]
@@ -131,6 +139,7 @@ fn main() {
         Command::Advise { log } => advise_log(&log),
         Command::Delete { dir, id } => delete(&dir, id),
         Command::Compact { dir } => compact(&dir),
+        Command::Stats { dir } => stats(&dir),
     };
     if let Err(error) = result {
         eprintln!("error: {error}");
@@ -517,6 +526,75 @@ fn compact(dir: &str) -> io::Result<()> {
     Ok(())
 }
 
+fn stats(dir: &str) -> io::Result<()> {
+    let manifest: Manifest = serde_json::from_str(&std::fs::read_to_string(manifest_path(dir))?)
+        .map_err(io::Error::other)?;
+    let collection = Collection::open(dir, manifest.dim, manifest.metric)?;
+
+    print!("{}", format_collection_stats(&collection.stats()));
+    Ok(())
+}
+
+fn format_collection_stats(stats: &CollectionStats) -> String {
+    let mut output = String::new();
+    output.push_str("collection stats\n");
+    output.push_str(&format!(
+        "  total vectors:          {}\n",
+        stats.total_count
+    ));
+    output.push_str(&format!("  live vectors:           {}\n", stats.live_count));
+    output.push_str(&format!(
+        "  deleted vectors:        {}\n",
+        stats.deleted_count
+    ));
+    output.push_str(&format!(
+        "  dead-node rate:         {:.2}%\n",
+        percent(stats.dead_fraction)
+    ));
+    output.push_str(&format!(
+        "  fragmentation:          {:.2}%\n",
+        percent(stats.dead_fraction)
+    ));
+    output.push_str(&format!(
+        "  segments:               {}\n",
+        stats.segments.len()
+    ));
+    output.push_str(&format!(
+        "  compaction recommended: {}\n",
+        yes_no(stats.compaction_recommended)
+    ));
+    output.push('\n');
+    output.push_str("segments\n");
+    output.push_str("  id  total  live  deleted  dead-node rate\n");
+    for segment in &stats.segments {
+        output.push_str(&format_segment_stats(segment));
+    }
+    output
+}
+
+fn format_segment_stats(segment: &SegmentStats) -> String {
+    format!(
+        "  {}  {}  {}  {}  {:.2}%\n",
+        segment.id,
+        segment.total_count,
+        segment.live_count,
+        segment.deleted_count,
+        percent(segment.dead_fraction)
+    )
+}
+
+fn percent(value: f32) -> f32 {
+    value * 100.0
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value {
+        return "yes";
+    }
+
+    "no"
+}
+
 fn print_explain(report: &ExplainSearch) {
     let summary = &report.query_summary;
     println!("query summary");
@@ -626,6 +704,37 @@ mod tests {
             plan: Some("PostFilter+AdaptiveEf".to_string()),
             recall_smoke,
         }
+    }
+
+    fn collection_stats(compaction_recommended: bool) -> CollectionStats {
+        CollectionStats {
+            total_count: 200,
+            live_count: 150,
+            deleted_count: 50,
+            dead_fraction: 0.25,
+            compaction_recommended,
+            segments: vec![SegmentStats {
+                id: 0,
+                total_count: 200,
+                live_count: 150,
+                deleted_count: 50,
+                dead_fraction: 0.25,
+            }],
+        }
+    }
+
+    #[test]
+    fn stats_output_reports_health_fields() {
+        let output = format_collection_stats(&collection_stats(true));
+
+        assert!(output.contains("total vectors:          200"));
+        assert!(output.contains("live vectors:           150"));
+        assert!(output.contains("deleted vectors:        50"));
+        assert!(output.contains("dead-node rate:         25.00%"));
+        assert!(output.contains("fragmentation:          25.00%"));
+        assert!(output.contains("segments:               1"));
+        assert!(output.contains("compaction recommended: yes"));
+        assert!(output.contains("0  200  150  50  25.00%"));
     }
 
     #[test]

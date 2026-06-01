@@ -73,6 +73,7 @@ flowchart TD
 | `loupe explain` | Why this result? Shows the chosen plan and the alternatives for one query. |
 | `loupe advise` | What is wrong across my workload? Reads query logs and suggests fixes. |
 | `loupe replay` | Did my change help? Replays a saved workload and reports before and after. |
+| `loupe stats` | Is my collection healthy? Shows live/deleted counts, fragmentation, and compaction signals. |
 | `loupe bench` | How does it compare? Runs test workloads and makes plots. |
 
 There is also the Loupe Graph Explorer (optional, M12). It is a 3D web view of
@@ -190,6 +191,15 @@ planner summary uses EXPLAIN counterfactuals to score `RuleLadder` and
 `CostModel` on the same workload. If `--feedback-log` points at prior query logs
 with `recall_smoke` values, replay feeds that historical miss rate into the cost
 model before planning.
+
+Check collection health after deletes:
+
+```
+loupe stats --dir /tmp/loupe-arxiv
+```
+
+This reports total, live, and deleted vectors, dead-node rate, fragmentation,
+segment count, and whether compaction is recommended.
 
 ## Quickstart
 

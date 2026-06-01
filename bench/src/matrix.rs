@@ -1,13 +1,15 @@
 //! Runs every filtered strategy across the selectivity x correlation matrix and
 //! reports recall and cost per cell, scored against the flat-exact oracle.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
+use std::io;
+use std::time::Instant;
 
 use loupe_distance::Metric;
 use loupe_filter::{Expr, MetadataStore};
 use loupe_hnsw::{FilteredStrategy, HnswIndex, Neighbor, SearchTrace};
 use loupe_planner::{
-    PlannedStrategy, PlannerConfig, QueryShape, choose_plan, classify_correlation,
+    Plan, PlannedStrategy, PlannerConfig, QueryShape, choose_plan, classify_correlation,
     estimate_correlation,
 };
 
@@ -22,6 +24,7 @@ pub enum Strategy {
     InTraversal,
     Acorn,
     AdaptiveAcorn,
+    Planner,
 }
 
 const STRATEGIES: [Strategy; 5] = [
@@ -30,6 +33,15 @@ const STRATEGIES: [Strategy; 5] = [
     Strategy::InTraversal,
     Strategy::Acorn,
     Strategy::AdaptiveAcorn,
+];
+
+const MATRIX_RUNNERS: [Strategy; 6] = [
+    Strategy::Flat,
+    Strategy::PostFilter,
+    Strategy::InTraversal,
+    Strategy::Acorn,
+    Strategy::AdaptiveAcorn,
+    Strategy::Planner,
 ];
 
 /// Settings shared across the whole matrix run.
@@ -41,13 +53,15 @@ pub struct MatrixConfig {
 }
 
 /// One row of the matrix: a strategy's result in a single cell.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct CellResult {
     pub selectivity: f32,
     pub correlation: Correlation,
     pub strategy: Strategy,
+    pub strategy_chosen: String,
     pub recall: f32,
     pub avg_distance_computations: f64,
+    pub avg_latency_micros: f64,
     pub avg_returned: f64,
 }
 
@@ -60,40 +74,72 @@ pub fn run_matrix(
     metric: Metric,
     config: &MatrixConfig,
 ) -> Vec<CellResult> {
+    let planner = PlannerConfig::default();
+    run_matrix_with_planner(index, base, queries, metric, config, &planner, 32)
+}
+
+/// Runs every fixed strategy plus the planner in every matrix cell.
+pub fn run_matrix_with_planner(
+    index: &HnswIndex,
+    base: &[Vec<f32>],
+    queries: &[Vec<f32>],
+    metric: Metric,
+    config: &MatrixConfig,
+    planner: &PlannerConfig,
+    samples: usize,
+) -> Vec<CellResult> {
     let mut results = Vec::new();
     let query_count = queries.len().max(1) as f64;
 
     for &selectivity in &SELECTIVITY_LEVELS {
         for &correlation in &CORRELATION_MODES {
-            let mut recall_sum = [0.0f64; STRATEGIES.len()];
-            let mut comps_sum = [0.0f64; STRATEGIES.len()];
-            let mut returned_sum = [0.0f64; STRATEGIES.len()];
+            let mut recall_sum = [0.0f64; MATRIX_RUNNERS.len()];
+            let mut comps_sum = [0.0f64; MATRIX_RUNNERS.len()];
+            let mut latency_sum = [0.0f64; MATRIX_RUNNERS.len()];
+            let mut returned_sum = [0.0f64; MATRIX_RUNNERS.len()];
+            let mut chosen_counts: Vec<BTreeMap<String, usize>> =
+                vec![BTreeMap::new(); MATRIX_RUNNERS.len()];
 
             for query in queries {
                 let allowed =
                     generate_filter(base, query, metric, selectivity, correlation, config.seed);
+                let oracle_start = Instant::now();
                 let (oracle, oracle_trace) = index.flat_filtered_search(query, config.k, &allowed);
+                let oracle_latency = oracle_start.elapsed().as_micros() as f64;
                 let oracle_ids: HashSet<u32> = oracle.iter().map(|n| n.id).collect();
 
-                for (slot, &strategy) in STRATEGIES.iter().enumerate() {
-                    let (got, trace) = if strategy == Strategy::Flat {
-                        (oracle.clone(), oracle_trace.clone())
-                    } else {
-                        run_strategy(index, strategy, query, &allowed, config)
+                for (slot, &strategy) in MATRIX_RUNNERS.iter().enumerate() {
+                    let outcome = match strategy {
+                        Strategy::Flat => StrategyOutcome {
+                            results: oracle.clone(),
+                            trace: oracle_trace.clone(),
+                            latency_micros: oracle_latency,
+                            strategy_chosen: strategy_name(strategy).to_string(),
+                        },
+                        Strategy::Planner => {
+                            run_planner_strategy(index, query, &allowed, config, planner, samples)
+                        }
+                        _ => run_strategy(index, strategy, query, &allowed, config),
                     };
-                    recall_sum[slot] += f64::from(overlap(&got, &oracle_ids));
-                    comps_sum[slot] += trace.distance_computations as f64;
-                    returned_sum[slot] += got.len() as f64;
+                    recall_sum[slot] += f64::from(overlap(&outcome.results, &oracle_ids));
+                    comps_sum[slot] += outcome.trace.distance_computations as f64;
+                    latency_sum[slot] += outcome.latency_micros;
+                    returned_sum[slot] += outcome.results.len() as f64;
+                    *chosen_counts[slot]
+                        .entry(outcome.strategy_chosen)
+                        .or_default() += 1;
                 }
             }
 
-            for (slot, &strategy) in STRATEGIES.iter().enumerate() {
+            for (slot, &strategy) in MATRIX_RUNNERS.iter().enumerate() {
                 results.push(CellResult {
                     selectivity,
                     correlation,
                     strategy,
+                    strategy_chosen: most_common_choice(&chosen_counts[slot]),
                     recall: (recall_sum[slot] / query_count) as f32,
                     avg_distance_computations: comps_sum[slot] / query_count,
+                    avg_latency_micros: latency_sum[slot] / query_count,
                     avg_returned: returned_sum[slot] / query_count,
                 });
             }
@@ -102,14 +148,22 @@ pub fn run_matrix(
     results
 }
 
+struct StrategyOutcome {
+    results: Vec<Neighbor>,
+    trace: SearchTrace,
+    latency_micros: f64,
+    strategy_chosen: String,
+}
+
 fn run_strategy(
     index: &HnswIndex,
     strategy: Strategy,
     query: &[f32],
     allowed: &roaring::RoaringBitmap,
     config: &MatrixConfig,
-) -> (Vec<Neighbor>, SearchTrace) {
-    match strategy {
+) -> StrategyOutcome {
+    let start = Instant::now();
+    let (results, trace) = match strategy {
         Strategy::Flat => index.flat_filtered_search(query, config.k, allowed),
         Strategy::PostFilter => index.post_filter_search(query, config.k, allowed, config.ef),
         Strategy::InTraversal => {
@@ -124,6 +178,13 @@ fn run_strategy(
             config.ef,
             config.max_ef,
         ),
+        Strategy::Planner => unreachable!("planner is not a fixed strategy"),
+    };
+    StrategyOutcome {
+        results,
+        trace,
+        latency_micros: start.elapsed().as_micros() as f64,
+        strategy_chosen: strategy_name(strategy).to_string(),
     }
 }
 
@@ -138,20 +199,55 @@ fn overlap(got: &[Neighbor], oracle_ids: &HashSet<u32>) -> f32 {
 /// Prints the matrix as a plain table.
 pub fn print_matrix(results: &[CellResult]) {
     println!(
-        "{:>8}  {:<18}  {:<14}  {:>7}  {:>12}  {:>9}",
-        "select", "correlation", "strategy", "recall", "dist/query", "returned"
+        "{:>8}  {:<18}  {:<14}  {:<20}  {:>7}  {:>12}  {:>10}  {:>9}",
+        "select",
+        "correlation",
+        "runner",
+        "chosen",
+        "recall",
+        "dist/query",
+        "latency_us",
+        "returned"
     );
     for row in results {
         println!(
-            "{:>7.1}%  {:<18}  {:<14}  {:>7.3}  {:>12.0}  {:>9.1}",
+            "{:>7.1}%  {:<18}  {:<14}  {:<20}  {:>7.3}  {:>12.0}  {:>10.1}  {:>9.1}",
             row.selectivity * 100.0,
-            format!("{:?}", row.correlation),
-            format!("{:?}", row.strategy),
+            correlation_name(row.correlation),
+            strategy_name(row.strategy),
+            row.strategy_chosen,
             row.recall,
             row.avg_distance_computations,
+            row.avg_latency_micros,
             row.avg_returned,
         );
     }
+}
+
+/// Writes matrix results as CSV for plotting and regression analysis.
+pub fn write_matrix_csv(path: &str, results: &[CellResult]) -> io::Result<()> {
+    std::fs::write(path, matrix_csv(results))
+}
+
+/// Returns matrix results as CSV text.
+pub fn matrix_csv(results: &[CellResult]) -> String {
+    let mut csv = String::from(
+        "selectivity,correlation,runner,strategy_chosen,recall,distance_computations,latency_micros,returned_count\n",
+    );
+    for row in results {
+        csv.push_str(&format!(
+            "{:.6},{},{},{},{:.6},{:.3},{:.3},{:.3}\n",
+            row.selectivity,
+            correlation_name(row.correlation),
+            strategy_name(row.strategy),
+            row.strategy_chosen,
+            row.recall,
+            row.avg_distance_computations,
+            row.avg_latency_micros,
+            row.avg_returned
+        ));
+    }
+    csv
 }
 
 /// One row of the real-metadata matrix: a strategy's result for a named filter.
@@ -189,14 +285,19 @@ pub fn run_metadata_matrix(
             let (oracle, oracle_trace) = index.flat_filtered_search(query, config.k, &allowed);
             let oracle_ids: HashSet<u32> = oracle.iter().map(|n| n.id).collect();
             for (slot, &strategy) in STRATEGIES.iter().enumerate() {
-                let (got, trace) = if strategy == Strategy::Flat {
-                    (oracle.clone(), oracle_trace.clone())
+                let outcome = if strategy == Strategy::Flat {
+                    StrategyOutcome {
+                        results: oracle.clone(),
+                        trace: oracle_trace.clone(),
+                        latency_micros: 0.0,
+                        strategy_chosen: strategy_name(strategy).to_string(),
+                    }
                 } else {
                     run_strategy(index, strategy, query, &allowed, config)
                 };
-                recall_sum[slot] += f64::from(overlap(&got, &oracle_ids));
-                comps_sum[slot] += trace.distance_computations as f64;
-                returned_sum[slot] += got.len() as f64;
+                recall_sum[slot] += f64::from(overlap(&outcome.results, &oracle_ids));
+                comps_sum[slot] += outcome.trace.distance_computations as f64;
+                returned_sum[slot] += outcome.results.len() as f64;
             }
         }
 
@@ -225,7 +326,7 @@ pub fn print_filter_matrix(results: &[FilterResult]) {
             "{:<22}  {:>6.2}%  {:<14}  {:>7.3}  {:>12.0}  {:>9.1}",
             row.label,
             row.selectivity * 100.0,
-            format!("{:?}", row.strategy),
+            strategy_name(row.strategy),
             row.recall,
             row.avg_distance_computations,
             row.avg_returned,
@@ -284,11 +385,11 @@ pub fn summarize_planner(
 
                 let mut fixed_outcomes = Vec::with_capacity(fixed.len());
                 for (slot, &strategy) in fixed.iter().enumerate() {
-                    let (results, trace) = run_strategy(index, strategy, query, &allowed, matrix);
-                    let recall = overlap(&results, &oracle_ids);
+                    let outcome = run_strategy(index, strategy, query, &allowed, matrix);
+                    let recall = overlap(&outcome.results, &oracle_ids);
                     recall_sum[slot] += f64::from(recall);
-                    comps_sum[slot] += trace.distance_computations as f64;
-                    fixed_outcomes.push((recall, trace.distance_computations));
+                    comps_sum[slot] += outcome.trace.distance_computations as f64;
+                    fixed_outcomes.push((recall, outcome.trace.distance_computations));
                 }
 
                 let (planner_comps, planner_recall) = run_planner(
@@ -344,6 +445,21 @@ fn run_planner(
     samples: usize,
     oracle_ids: &HashSet<u32>,
 ) -> (u64, f32) {
+    let outcome = run_planner_strategy(index, query, allowed, matrix, planner, samples);
+    (
+        outcome.trace.distance_computations,
+        overlap(&outcome.results, oracle_ids),
+    )
+}
+
+fn run_planner_strategy(
+    index: &HnswIndex,
+    query: &[f32],
+    allowed: &roaring::RoaringBitmap,
+    matrix: &MatrixConfig,
+    planner: &PlannerConfig,
+    samples: usize,
+) -> StrategyOutcome {
     let score = estimate_correlation(
         index.accessor(),
         index.metric(),
@@ -359,6 +475,7 @@ fn run_planner(
         correlation: classify_correlation(score, planner.correlation_band),
     };
     let plan = choose_plan(&shape, planner);
+    let start = Instant::now();
     let (results, trace) = if plan.adaptive {
         match plan.strategy {
             PlannedStrategy::Flat => index.flat_filtered_search(query, matrix.k, allowed),
@@ -401,7 +518,58 @@ fn run_planner(
             }
         }
     };
-    (trace.distance_computations, overlap(&results, oracle_ids))
+    StrategyOutcome {
+        results,
+        trace,
+        latency_micros: start.elapsed().as_micros() as f64,
+        strategy_chosen: plan_name(&plan),
+    }
+}
+
+fn strategy_name(strategy: Strategy) -> &'static str {
+    match strategy {
+        Strategy::Flat => "Flat",
+        Strategy::PostFilter => "PostFilter",
+        Strategy::InTraversal => "InTraversal",
+        Strategy::Acorn => "Acorn",
+        Strategy::AdaptiveAcorn => "AdaptiveAcorn",
+        Strategy::Planner => "Planner",
+    }
+}
+
+fn plan_name(plan: &Plan) -> String {
+    let base = planned_strategy_name(plan.strategy);
+    if plan.adaptive {
+        return format!("{base}+AdaptiveEf");
+    }
+
+    base.to_string()
+}
+
+fn planned_strategy_name(strategy: PlannedStrategy) -> &'static str {
+    match strategy {
+        PlannedStrategy::Flat => "Flat",
+        PlannedStrategy::PostFilter => "PostFilter",
+        PlannedStrategy::InTraversal => "InTraversal",
+        PlannedStrategy::Acorn => "Acorn",
+    }
+}
+
+fn correlation_name(correlation: Correlation) -> &'static str {
+    match correlation {
+        Correlation::Random => "random",
+        Correlation::Positive => "positive",
+        Correlation::AntiCorrelated => "anti_correlated",
+        Correlation::ClusteredByTenant => "clustered_by_tenant",
+    }
+}
+
+fn most_common_choice(counts: &BTreeMap<String, usize>) -> String {
+    counts
+        .iter()
+        .max_by_key(|(_, count)| *count)
+        .map(|(name, _)| name.clone())
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 /// Prints the planner-vs-fixed summary as a plain table.
@@ -448,7 +616,7 @@ mod tests {
     fn matrix_has_one_row_per_cell_and_strategy() {
         let (index, base, queries) = small_setup();
         let results = run_matrix(&index, &base, &queries, Metric::L2, &config());
-        let expected = SELECTIVITY_LEVELS.len() * CORRELATION_MODES.len() * STRATEGIES.len();
+        let expected = SELECTIVITY_LEVELS.len() * CORRELATION_MODES.len() * MATRIX_RUNNERS.len();
         assert_eq!(results.len(), expected);
     }
 
@@ -459,6 +627,45 @@ mod tests {
         for row in results.iter().filter(|r| r.strategy == Strategy::Flat) {
             assert!(row.recall >= 0.999, "flat recall {} too low", row.recall);
         }
+    }
+
+    #[test]
+    fn matrix_includes_planner_rows_with_chosen_strategy() {
+        let (index, base, queries) = small_setup();
+        let results = run_matrix(&index, &base, &queries, Metric::L2, &config());
+        let planner_rows: Vec<&CellResult> = results
+            .iter()
+            .filter(|row| row.strategy == Strategy::Planner)
+            .collect();
+
+        assert_eq!(
+            planner_rows.len(),
+            SELECTIVITY_LEVELS.len() * CORRELATION_MODES.len()
+        );
+        for row in planner_rows {
+            assert!(!row.strategy_chosen.is_empty());
+            assert!(row.avg_latency_micros >= 0.0);
+        }
+    }
+
+    #[test]
+    fn matrix_csv_has_plot_ready_columns() {
+        let rows = vec![CellResult {
+            selectivity: 0.01,
+            correlation: Correlation::AntiCorrelated,
+            strategy: Strategy::Planner,
+            strategy_chosen: "Acorn+AdaptiveEf".to_string(),
+            recall: 0.95,
+            avg_distance_computations: 123.0,
+            avg_latency_micros: 45.0,
+            avg_returned: 10.0,
+        }];
+        let csv = matrix_csv(&rows);
+
+        assert!(csv.starts_with(
+            "selectivity,correlation,runner,strategy_chosen,recall,distance_computations,latency_micros,returned_count\n"
+        ));
+        assert!(csv.contains("0.010000,anti_correlated,Planner,Acorn+AdaptiveEf"));
     }
 
     fn metadata_setup() -> (HnswIndex, MetadataStore) {

@@ -175,8 +175,12 @@ bash scripts/download-datasets.sh siftsmall
 cargo run --release -p loupe-bench --bin loupe-bench -- \
   datasets/siftsmall/siftsmall_base.fvecs \
   datasets/siftsmall/siftsmall_query.fvecs \
-  datasets/siftsmall/siftsmall_groundtruth.ivecs
+  datasets/siftsmall/siftsmall_groundtruth.ivecs \
+  --matrix-csv /tmp/loupe-matrix.csv
 ```
+
+The CSV contains one row per selectivity and correlation cell, including the
+runner, strategy chosen, recall, distance work, latency, and returned count.
 
 For the full million-vector set, run the download script with `sift` instead of
 `siftsmall`, then point the command at the `sift_*` files.

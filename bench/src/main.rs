@@ -4,6 +4,7 @@ use std::time::Instant;
 use loupe_bench::compaction::{print_compaction_probe, run_compaction_probe};
 use loupe_bench::matrix::{
     MatrixConfig, print_matrix, print_planner_summary, run_matrix, summarize_planner,
+    write_matrix_csv,
 };
 use loupe_bench::{read_fvecs, read_ivecs, recall_at_k};
 use loupe_distance::Metric;
@@ -16,15 +17,11 @@ const K: usize = 10;
 /// queries, and prints recall@10 plus basic timing. Cosine ground truth is
 /// computed with the brute-force baseline, since the dataset ships L2 truth only.
 fn main() {
-    let args: Vec<String> = env::args().collect();
-    if args.len() != 4 {
-        eprintln!("usage: loupe-bench <base.fvecs> <query.fvecs> <groundtruth.ivecs>");
-        std::process::exit(1);
-    }
+    let args = parse_args();
 
-    let base = read_fvecs(&args[1]).expect("failed to read base vectors");
-    let queries = read_fvecs(&args[2]).expect("failed to read query vectors");
-    let l2_truth = read_ivecs(&args[3]).expect("failed to read ground truth");
+    let base = read_fvecs(&args.base_path).expect("failed to read base vectors");
+    let queries = read_fvecs(&args.query_path).expect("failed to read query vectors");
+    let l2_truth = read_ivecs(&args.groundtruth_path).expect("failed to read ground truth");
     let dim = base[0].len();
 
     println!("base vectors: {}", base.len());
@@ -64,6 +61,10 @@ fn main() {
     };
     let cells = run_matrix(&l2_index, &base, &queries, Metric::L2, &matrix_config);
     print_matrix(&cells);
+    if let Some(path) = &args.matrix_csv_path {
+        write_matrix_csv(path, &cells).expect("failed to write matrix CSV");
+        println!("matrix CSV: {path}");
+    }
 
     println!();
     println!("=== planner vs fixed strategies (over all cells) ===");
@@ -110,6 +111,45 @@ fn main() {
     println!("=== compaction probe (synthetic L2) ===");
     let compaction = run_compaction_probe(1000, 2);
     print_compaction_probe(&compaction);
+}
+
+struct BenchArgs {
+    base_path: String,
+    query_path: String,
+    groundtruth_path: String,
+    matrix_csv_path: Option<String>,
+}
+
+fn parse_args() -> BenchArgs {
+    let mut positional = Vec::new();
+    let mut matrix_csv_path = None;
+    let mut args = env::args().skip(1);
+
+    while let Some(arg) = args.next() {
+        if arg == "--matrix-csv" {
+            let path = args.next().unwrap_or_else(|| {
+                eprintln!("--matrix-csv requires a path");
+                std::process::exit(1);
+            });
+            matrix_csv_path = Some(path);
+        } else {
+            positional.push(arg);
+        }
+    }
+
+    if positional.len() != 3 {
+        eprintln!(
+            "usage: loupe-bench <base.fvecs> <query.fvecs> <groundtruth.ivecs> [--matrix-csv <path>]"
+        );
+        std::process::exit(1);
+    }
+
+    BenchArgs {
+        base_path: positional[0].clone(),
+        query_path: positional[1].clone(),
+        groundtruth_path: positional[2].clone(),
+        matrix_csv_path,
+    }
 }
 
 fn build_index(base: &[Vec<f32>], dim: usize, metric: Metric) -> HnswIndex {

@@ -725,6 +725,7 @@ dependencies = [
  "loupe-advisor",
  "loupe-distance",
  "loupe-engine",
+ "loupe-planner",
  "serde",
  "serde_json",
 ]

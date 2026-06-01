@@ -136,8 +136,9 @@ M11 has started. The live planner now scores `Flat`, `PostFilter`,
 `InTraversal`, and `Acorn` with a cost model over selectivity, candidate count,
 `k`, vector count, `ef`, correlation, and historical recall misses. The remaining
 work is calibration against the benchmark matrix and replay logs. The benchmark
-summary now keeps the old M4 rule ladder as a baseline and prints recall, distance
-work, and regret for `RuleLadder` and `CostModel` side by side.
+summary and replay command now keep the old M4 rule ladder as a baseline and
+print recall, distance work, and regret for `RuleLadder` and `CostModel` side by
+side.
 
 ## EXPLAIN Reference Workflow
 
@@ -168,6 +169,18 @@ risk flags: anti_correlated_filter
 
 The key point is not only which plan won. It is that Loupe shows the rejected
 plans next to the chosen one, with their cost and recall proxy.
+
+Replay a saved workload and compare the old rule ladder with the live cost model:
+
+```
+loupe replay --dir /tmp/loupe-arxiv --query datasets/arxiv/arxiv_query.jsonl \
+  --filter "category=math.PR" --out /tmp/loupe-query-log.jsonl \
+  --compare-planners --planner-summary-csv /tmp/loupe-replay-planners.csv
+```
+
+The replay log still records the live planner choice for each query. The optional
+planner summary uses EXPLAIN counterfactuals to score `RuleLadder` and
+`CostModel` on the same workload.
 
 ## Quickstart
 

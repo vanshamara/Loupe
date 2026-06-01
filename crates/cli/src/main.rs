@@ -10,6 +10,7 @@ use clap::{Parser, Subcommand};
 use loupe_advisor::advise;
 use loupe_distance::Metric;
 use loupe_engine::{Collection, ExplainSearch, PlanReport, QueryLogRecord, Value, parse_filter};
+use loupe_planner::PlannerConfig;
 use serde::{Deserialize, Serialize};
 
 #[derive(Parser)]
@@ -53,6 +54,10 @@ enum Command {
         out: String,
         #[arg(long, default_value_t = 10)]
         k: usize,
+        #[arg(long, default_value_t = false)]
+        compare_planners: bool,
+        #[arg(long)]
+        planner_summary_csv: Option<String>,
     },
     /// Read a query log and print the advisor's recommendations.
     Advise {
@@ -104,7 +109,17 @@ fn main() {
             filter,
             out,
             k,
-        } => replay(&dir, &query, &filter, &out, k),
+            compare_planners,
+            planner_summary_csv,
+        } => replay(
+            &dir,
+            &query,
+            &filter,
+            &out,
+            k,
+            compare_planners,
+            planner_summary_csv.as_deref(),
+        ),
         Command::Advise { log } => advise_log(&log),
         Command::Delete { dir, id } => delete(&dir, id),
         Command::Compact { dir } => compact(&dir),
@@ -163,12 +178,26 @@ fn explain(dir: &str, query: &str, index: usize, filter: &str, k: usize) -> io::
     Ok(())
 }
 
-fn replay(dir: &str, query: &str, filter: &str, out: &str, k: usize) -> io::Result<()> {
+fn replay(
+    dir: &str,
+    query: &str,
+    filter: &str,
+    out: &str,
+    k: usize,
+    compare_planners: bool,
+    planner_summary_csv: Option<&str>,
+) -> io::Result<()> {
     let manifest: Manifest = serde_json::from_str(&std::fs::read_to_string(manifest_path(dir))?)
         .map_err(io::Error::other)?;
     let collection = Collection::open(dir, manifest.dim, manifest.metric)?;
     let queries = read_records(query)?;
     let expr = parse_filter(filter).map_err(io::Error::other)?;
+    let planner_config = PlannerConfig::default();
+    let mut planner_summary = if compare_planners || planner_summary_csv.is_some() {
+        Some(ReplayPlannerSummary::default())
+    } else {
+        None
+    };
 
     let mut file = OpenOptions::new().create(true).append(true).open(out)?;
     let mut plan_counts: HashMap<String, usize> = HashMap::new();
@@ -184,14 +213,184 @@ fn replay(dir: &str, query: &str, filter: &str, out: &str, k: usize) -> io::Resu
             "{}",
             serde_json::to_string(&log).map_err(io::Error::other)?
         )?;
+        if let Some(summary) = &mut planner_summary {
+            let (_, explain) = collection.explain_search(&record.embedding, &expr, k);
+            summary.observe(&explain, &planner_config)?;
+        }
     }
 
     let count = queries.len().max(1) as u64;
     println!("replayed {} queries with filter {filter:?}", queries.len());
     println!("avg latency: {} us", total_latency / count);
     println!("plans chosen: {plan_counts:?}");
+    if let Some(summary) = &planner_summary {
+        print_replay_planner_summary(summary);
+        if let Some(path) = planner_summary_csv {
+            write_replay_planner_summary_csv(path, summary)?;
+            println!("planner summary CSV: {path}");
+        }
+    }
     println!("log appended to {out}");
     Ok(())
+}
+
+#[derive(Default)]
+struct ReplayPlannerSummary {
+    rule_ladder: ReplayPlannerStats,
+    cost_model: ReplayPlannerStats,
+    query_count: usize,
+}
+
+impl ReplayPlannerSummary {
+    fn observe(&mut self, explain: &ExplainSearch, config: &PlannerConfig) -> io::Result<()> {
+        let reports = all_plan_reports(explain);
+        let rule_ladder_name = rule_ladder_plan_name(explain, config);
+        let rule_ladder_report = find_plan_report(explain, &rule_ladder_name)?;
+        let cost_model_report = &explain.chosen_plan;
+
+        self.rule_ladder.observe(
+            rule_ladder_report,
+            report_is_dominated(rule_ladder_report, &reports),
+        );
+        self.cost_model.observe(
+            cost_model_report,
+            report_is_dominated(cost_model_report, &reports),
+        );
+        self.query_count += 1;
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct ReplayPlannerStats {
+    recall_sum: f64,
+    distance_sum: u64,
+    regretted: usize,
+    plan_counts: HashMap<String, usize>,
+}
+
+impl ReplayPlannerStats {
+    fn observe(&mut self, report: &PlanReport, regretted: bool) {
+        self.recall_sum += f64::from(report.recall_proxy);
+        self.distance_sum += report.distance_computations;
+        if regretted {
+            self.regretted += 1;
+        }
+        *self.plan_counts.entry(report.strategy.clone()).or_default() += 1;
+    }
+
+    fn mean_recall(&self, count: usize) -> f64 {
+        self.recall_sum / count.max(1) as f64
+    }
+
+    fn mean_distance_computations(&self, count: usize) -> f64 {
+        self.distance_sum as f64 / count.max(1) as f64
+    }
+
+    fn regret(&self, count: usize) -> f64 {
+        self.regretted as f64 / count.max(1) as f64
+    }
+}
+
+fn all_plan_reports(explain: &ExplainSearch) -> Vec<&PlanReport> {
+    let mut reports = Vec::with_capacity(explain.counterfactual_plans.len() + 1);
+    reports.push(&explain.chosen_plan);
+    reports.extend(explain.counterfactual_plans.iter());
+    reports
+}
+
+fn find_plan_report<'a>(explain: &'a ExplainSearch, strategy: &str) -> io::Result<&'a PlanReport> {
+    all_plan_reports(explain)
+        .into_iter()
+        .find(|report| report.strategy == strategy)
+        .ok_or_else(|| {
+            io::Error::other(format!(
+                "missing counterfactual plan for rule-ladder strategy {strategy}"
+            ))
+        })
+}
+
+fn report_is_dominated(target: &PlanReport, reports: &[&PlanReport]) -> bool {
+    reports.iter().any(|candidate| {
+        candidate.recall_proxy >= target.recall_proxy
+            && candidate.distance_computations <= target.distance_computations
+            && (candidate.recall_proxy > target.recall_proxy
+                || candidate.distance_computations < target.distance_computations)
+    })
+}
+
+fn rule_ladder_plan_name(explain: &ExplainSearch, config: &PlannerConfig) -> String {
+    let summary = &explain.query_summary;
+    if summary.matching_count as usize <= config.flat_threshold.max(summary.k) {
+        return "Flat".to_string();
+    }
+    if summary.correlation == "anti_correlated" {
+        return "Acorn+AdaptiveEf".to_string();
+    }
+    if summary.selectivity >= config.broad_selectivity {
+        return "PostFilter+AdaptiveEf".to_string();
+    }
+    if summary.selectivity < config.strict_selectivity {
+        return "Acorn+AdaptiveEf".to_string();
+    }
+
+    "InTraversal+AdaptiveEf".to_string()
+}
+
+fn print_replay_planner_summary(summary: &ReplayPlannerSummary) {
+    println!("planner comparison:");
+    println!(
+        "{:<12} {:>11} {:>16} {:>8}  plan mix",
+        "planner", "mean recall", "mean dist/query", "regret"
+    );
+    print_replay_planner_row("RuleLadder", &summary.rule_ladder, summary.query_count);
+    print_replay_planner_row("CostModel", &summary.cost_model, summary.query_count);
+    println!(
+        "regret_delta: {:.3}",
+        summary.rule_ladder.regret(summary.query_count)
+            - summary.cost_model.regret(summary.query_count)
+    );
+}
+
+fn print_replay_planner_row(name: &str, stats: &ReplayPlannerStats, count: usize) {
+    println!(
+        "{:<12} {:>11.3} {:>16.0} {:>8.3}  {:?}",
+        name,
+        stats.mean_recall(count),
+        stats.mean_distance_computations(count),
+        stats.regret(count),
+        stats.plan_counts
+    );
+}
+
+fn write_replay_planner_summary_csv(path: &str, summary: &ReplayPlannerSummary) -> io::Result<()> {
+    std::fs::write(path, replay_planner_summary_csv(summary))
+}
+
+fn replay_planner_summary_csv(summary: &ReplayPlannerSummary) -> String {
+    let count = summary.query_count;
+    let rule_regret = summary.rule_ladder.regret(count);
+    let cost_regret = summary.cost_model.regret(count);
+    let regret_delta = rule_regret - cost_regret;
+    let mut csv =
+        String::from("planner,mean_recall,mean_distance_computations,regret,regret_delta\n");
+
+    csv.push_str(&format!(
+        "RuleLadder,{:.6},{:.3},{:.6},{:.6}\n",
+        summary.rule_ladder.mean_recall(count),
+        summary.rule_ladder.mean_distance_computations(count),
+        rule_regret,
+        regret_delta
+    ));
+    csv.push_str(&format!(
+        "CostModel,{:.6},{:.3},{:.6},{:.6}\n",
+        summary.cost_model.mean_recall(count),
+        summary.cost_model.mean_distance_computations(count),
+        cost_regret,
+        regret_delta
+    ));
+
+    csv
 }
 
 fn advise_log(log: &str) -> io::Result<()> {
@@ -314,4 +513,102 @@ fn read_records(path: &str) -> io::Result<Vec<Record>> {
 
 fn manifest_path(dir: &str) -> String {
     format!("{dir}/manifest.json")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use loupe_engine::QuerySummary;
+
+    fn plan(strategy: &str, distance_computations: u64, recall_proxy: f32) -> PlanReport {
+        PlanReport {
+            strategy: strategy.to_string(),
+            chosen: false,
+            distance_computations,
+            returned: 10,
+            recall_proxy,
+        }
+    }
+
+    fn explain(
+        matching_count: u64,
+        selectivity: f32,
+        correlation: &str,
+        chosen_plan: PlanReport,
+        counterfactual_plans: Vec<PlanReport>,
+    ) -> ExplainSearch {
+        ExplainSearch {
+            query_summary: QuerySummary {
+                k: 10,
+                matching_count,
+                selectivity,
+                correlation: correlation.to_string(),
+            },
+            chosen_plan,
+            counterfactual_plans,
+            trace_metrics: Default::default(),
+            risk_flags: Vec::new(),
+            recommendations: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn rule_ladder_plan_name_matches_m4_choices() {
+        let config = PlannerConfig::default();
+        let broad = explain(
+            60_000,
+            0.6,
+            "neutral",
+            plan("PostFilter+AdaptiveEf", 100, 1.0),
+            Vec::new(),
+        );
+        let anti = explain(
+            60_000,
+            0.6,
+            "anti_correlated",
+            plan("Acorn+AdaptiveEf", 100, 1.0),
+            Vec::new(),
+        );
+        let strict = explain(
+            3_000,
+            0.003,
+            "neutral",
+            plan("Acorn+AdaptiveEf", 100, 1.0),
+            Vec::new(),
+        );
+        let small = explain(
+            100,
+            0.001,
+            "anti_correlated",
+            plan("Flat", 100, 1.0),
+            Vec::new(),
+        );
+
+        assert_eq!(
+            rule_ladder_plan_name(&broad, &config),
+            "PostFilter+AdaptiveEf"
+        );
+        assert_eq!(rule_ladder_plan_name(&anti, &config), "Acorn+AdaptiveEf");
+        assert_eq!(rule_ladder_plan_name(&strict, &config), "Acorn+AdaptiveEf");
+        assert_eq!(rule_ladder_plan_name(&small, &config), "Flat");
+    }
+
+    #[test]
+    fn replay_summary_scores_rule_ladder_against_cost_model() {
+        let config = PlannerConfig::default();
+        let chosen = plan("PostFilter+AdaptiveEf", 100, 0.5);
+        let reports = vec![
+            plan("Flat", 90, 0.5),
+            plan("InTraversal+AdaptiveEf", 500, 1.0),
+            plan("Acorn+AdaptiveEf", 300, 1.0),
+        ];
+        let explain = explain(60_000, 0.6, "anti_correlated", chosen, reports);
+        let mut summary = ReplayPlannerSummary::default();
+
+        summary.observe(&explain, &config).unwrap();
+        let csv = replay_planner_summary_csv(&summary);
+
+        assert!(csv.contains("RuleLadder,1.000000,300.000,0.000000,-1.000000"));
+        assert!(csv.contains("CostModel,0.500000,100.000,1.000000,-1.000000"));
+    }
 }

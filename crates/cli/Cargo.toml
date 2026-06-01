@@ -11,6 +11,7 @@ path = "src/main.rs"
 loupe-engine = { path = "../engine" }
 loupe-advisor = { path = "../advisor" }
 loupe-distance = { path = "../distance" }
+loupe-planner = { path = "../planner" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 clap = { version = "4", features = ["derive"] }

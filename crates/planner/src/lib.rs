@@ -160,7 +160,7 @@ fn selectivity(shape: &QueryShape) -> f32 {
 fn flat_work(shape: &QueryShape, config: &PlannerConfig) -> f32 {
     let work = shape.matching_count.max(shape.k) as f32;
     if shape.matching_count <= config.flat_threshold.max(shape.k) {
-        return work;
+        return work * 0.25;
     }
     work * 10.0
 }
@@ -364,6 +364,16 @@ mod tests {
     fn flat_for_few_matches() {
         let plan = choose_plan(
             &shape(50, 100_000, CorrelationClass::Neutral),
+            &PlannerConfig::default(),
+        );
+        assert_eq!(plan.strategy, PlannedStrategy::Flat);
+        assert!(!plan.adaptive);
+    }
+
+    #[test]
+    fn flat_for_small_anti_correlated_filter() {
+        let plan = choose_plan(
+            &shape(1_000, 100_000, CorrelationClass::AntiCorrelated),
             &PlannerConfig::default(),
         );
         assert_eq!(plan.strategy, PlannedStrategy::Flat);

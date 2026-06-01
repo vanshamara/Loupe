@@ -135,7 +135,9 @@ and WAL bytes, then compacts and reports the same numbers again.
 M11 has started. The live planner now scores `Flat`, `PostFilter`,
 `InTraversal`, and `Acorn` with a cost model over selectivity, candidate count,
 `k`, vector count, `ef`, correlation, and historical recall misses. The remaining
-work is calibration against the benchmark matrix and replay logs.
+work is calibration against the benchmark matrix and replay logs. The benchmark
+summary now keeps the old M4 rule ladder as a baseline and prints recall, distance
+work, and regret for `RuleLadder` and `CostModel` side by side.
 
 ## EXPLAIN Reference Workflow
 

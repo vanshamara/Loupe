@@ -9,8 +9,8 @@ use loupe_distance::Metric;
 use loupe_filter::{Expr, MetadataStore};
 use loupe_hnsw::{FilteredStrategy, HnswIndex, Neighbor, SearchTrace};
 use loupe_planner::{
-    Plan, PlannedStrategy, PlannerConfig, QueryShape, choose_plan, classify_correlation,
-    estimate_correlation,
+    CorrelationClass, Plan, PlannedStrategy, PlannerConfig, QueryShape, choose_plan,
+    classify_correlation, estimate_correlation,
 };
 
 use crate::filters::{CORRELATION_MODES, Correlation, SELECTIVITY_LEVELS, generate_filter};
@@ -342,19 +342,15 @@ pub struct StrategySummary {
     pub mean_distance_computations: f64,
 }
 
-/// The planner compared against the fixed strategies over the whole matrix, plus
-/// the planner's regret: how often its pick was beaten on both recall and cost.
+/// The planner comparison over the whole matrix.
 #[derive(Clone, Debug)]
 pub struct PlannerSummary {
     pub strategies: Vec<StrategySummary>,
-    pub regret: f32,
+    pub rule_ladder_regret: f32,
+    pub cost_model_regret: f32,
 }
 
-/// Runs the planner and the four fixed strategies over every cell, then reports
-/// each one's mean recall and cost and the planner's regret. Regret counts the
-/// queries where some fixed strategy matched or beat the planner's recall at no
-/// more cost (and was strictly better on one) — i.e. the planner missed the
-/// recall/cost frontier.
+/// Runs both planner generations and the fixed strategies across every matrix cell.
 pub fn summarize_planner(
     index: &HnswIndex,
     base: &[Vec<f32>],
@@ -370,9 +366,10 @@ pub fn summarize_planner(
         Strategy::InTraversal,
         Strategy::Acorn,
     ];
-    let mut recall_sum = [0.0f64; 5];
-    let mut comps_sum = [0.0f64; 5];
-    let mut regretted = 0usize;
+    let mut recall_sum = [0.0f64; 6];
+    let mut comps_sum = [0.0f64; 6];
+    let mut rule_ladder_regretted = 0usize;
+    let mut cost_model_regretted = 0usize;
     let mut total = 0usize;
 
     for &selectivity in &SELECTIVITY_LEVELS {
@@ -392,7 +389,7 @@ pub fn summarize_planner(
                     fixed_outcomes.push((recall, outcome.trace.distance_computations));
                 }
 
-                let (planner_comps, planner_recall) = run_planner(
+                let (rule_ladder_comps, rule_ladder_recall) = run_rule_ladder(
                     index,
                     query,
                     &allowed,
@@ -401,16 +398,26 @@ pub fn summarize_planner(
                     samples,
                     &oracle_ids,
                 );
-                recall_sum[4] += f64::from(planner_recall);
-                comps_sum[4] += planner_comps as f64;
+                recall_sum[4] += f64::from(rule_ladder_recall);
+                comps_sum[4] += rule_ladder_comps as f64;
 
-                let dominated = fixed_outcomes.iter().any(|&(recall, comps)| {
-                    recall >= planner_recall
-                        && comps <= planner_comps
-                        && (recall > planner_recall || comps < planner_comps)
-                });
-                if dominated {
-                    regretted += 1;
+                let (cost_model_comps, cost_model_recall) = run_cost_model(
+                    index,
+                    query,
+                    &allowed,
+                    matrix,
+                    planner,
+                    samples,
+                    &oracle_ids,
+                );
+                recall_sum[5] += f64::from(cost_model_recall);
+                comps_sum[5] += cost_model_comps as f64;
+
+                if is_dominated(&fixed_outcomes, rule_ladder_recall, rule_ladder_comps) {
+                    rule_ladder_regretted += 1;
+                }
+                if is_dominated(&fixed_outcomes, cost_model_recall, cost_model_comps) {
+                    cost_model_regretted += 1;
                 }
                 total += 1;
             }
@@ -418,7 +425,14 @@ pub fn summarize_planner(
     }
 
     let total_f = total.max(1) as f64;
-    let names = ["Flat", "PostFilter", "InTraversal", "Acorn", "Planner"];
+    let names = [
+        "Flat",
+        "PostFilter",
+        "InTraversal",
+        "Acorn",
+        "RuleLadder",
+        "CostModel",
+    ];
     let strategies = names
         .iter()
         .zip(recall_sum.iter())
@@ -432,11 +446,28 @@ pub fn summarize_planner(
 
     PlannerSummary {
         strategies,
-        regret: (regretted as f64 / total_f) as f32,
+        rule_ladder_regret: (rule_ladder_regretted as f64 / total_f) as f32,
+        cost_model_regret: (cost_model_regretted as f64 / total_f) as f32,
     }
 }
 
-fn run_planner(
+fn run_rule_ladder(
+    index: &HnswIndex,
+    query: &[f32],
+    allowed: &roaring::RoaringBitmap,
+    matrix: &MatrixConfig,
+    planner: &PlannerConfig,
+    samples: usize,
+    oracle_ids: &HashSet<u32>,
+) -> (u64, f32) {
+    let outcome = run_rule_ladder_strategy(index, query, allowed, matrix, planner, samples);
+    (
+        outcome.trace.distance_computations,
+        overlap(&outcome.results, oracle_ids),
+    )
+}
+
+fn run_cost_model(
     index: &HnswIndex,
     query: &[f32],
     allowed: &roaring::RoaringBitmap,
@@ -450,6 +481,37 @@ fn run_planner(
         outcome.trace.distance_computations,
         overlap(&outcome.results, oracle_ids),
     )
+}
+
+fn is_dominated(fixed_outcomes: &[(f32, u64)], planner_recall: f32, planner_comps: u64) -> bool {
+    fixed_outcomes.iter().any(|&(recall, comps)| {
+        recall >= planner_recall
+            && comps <= planner_comps
+            && (recall > planner_recall || comps < planner_comps)
+    })
+}
+
+fn run_rule_ladder_strategy(
+    index: &HnswIndex,
+    query: &[f32],
+    allowed: &roaring::RoaringBitmap,
+    matrix: &MatrixConfig,
+    planner: &PlannerConfig,
+    samples: usize,
+) -> StrategyOutcome {
+    let score = estimate_correlation(
+        index.accessor(),
+        index.metric(),
+        query,
+        allowed,
+        samples,
+        matrix.seed,
+    );
+    let correlation = classify_correlation(score, planner.correlation_band);
+    let mut shape = QueryShape::new(index.len(), allowed.len() as usize, matrix.k, correlation);
+    shape.candidate_count = matrix.ef.max(matrix.k);
+    let plan = choose_rule_ladder_plan(&shape, planner);
+    run_plan(index, query, allowed, matrix, &plan)
 }
 
 fn run_planner_strategy(
@@ -472,6 +534,16 @@ fn run_planner_strategy(
     let mut shape = QueryShape::new(index.len(), allowed.len() as usize, matrix.k, correlation);
     shape.candidate_count = matrix.ef.max(matrix.k);
     let plan = choose_plan(&shape, planner);
+    run_plan(index, query, allowed, matrix, &plan)
+}
+
+fn run_plan(
+    index: &HnswIndex,
+    query: &[f32],
+    allowed: &roaring::RoaringBitmap,
+    matrix: &MatrixConfig,
+    plan: &Plan,
+) -> StrategyOutcome {
     let start = Instant::now();
     let (results, trace) = if plan.adaptive {
         match plan.strategy {
@@ -519,7 +591,33 @@ fn run_planner_strategy(
         results,
         trace,
         latency_micros: start.elapsed().as_micros() as f64,
-        strategy_chosen: plan_name(&plan),
+        strategy_chosen: plan_name(plan),
+    }
+}
+
+fn choose_rule_ladder_plan(shape: &QueryShape, config: &PlannerConfig) -> Plan {
+    let ef = config.ef.max(shape.k);
+    let max_ef = config.max_ef.max(ef);
+    let selectivity = shape.matching_count as f32 / shape.total.max(1) as f32;
+
+    let strategy = if shape.matching_count <= config.flat_threshold.max(shape.k) {
+        PlannedStrategy::Flat
+    } else if shape.correlation == CorrelationClass::AntiCorrelated {
+        PlannedStrategy::Acorn
+    } else if selectivity >= config.broad_selectivity {
+        PlannedStrategy::PostFilter
+    } else if selectivity < config.strict_selectivity {
+        PlannedStrategy::Acorn
+    } else {
+        PlannedStrategy::InTraversal
+    };
+
+    Plan {
+        strategy,
+        ef,
+        max_ef,
+        adaptive: strategy != PlannedStrategy::Flat,
+        reason: "benchmark rule-ladder baseline",
     }
 }
 
@@ -581,7 +679,12 @@ pub fn print_planner_summary(summary: &PlannerSummary) {
             row.name, row.mean_recall, row.mean_distance_computations
         );
     }
-    println!("planner_regret: {:.3}", summary.regret);
+    println!("rule_ladder_regret: {:.3}", summary.rule_ladder_regret);
+    println!("cost_model_regret:  {:.3}", summary.cost_model_regret);
+    println!(
+        "regret_delta:       {:.3}",
+        summary.rule_ladder_regret - summary.cost_model_regret
+    );
 }
 
 #[cfg(test)]
@@ -691,14 +794,50 @@ mod tests {
         let summary =
             summarize_planner(&index, &base, &queries, Metric::L2, &config(), &planner, 16);
 
-        assert_eq!(summary.strategies.len(), 5);
-        assert!((0.0..=1.0).contains(&summary.regret));
+        assert_eq!(summary.strategies.len(), 6);
+        assert!((0.0..=1.0).contains(&summary.rule_ladder_regret));
+        assert!((0.0..=1.0).contains(&summary.cost_model_regret));
+        assert!(
+            summary
+                .strategies
+                .iter()
+                .any(|row| row.name == "RuleLadder")
+        );
         let planner_row = summary.strategies.last().unwrap();
-        assert_eq!(planner_row.name, "Planner");
+        assert_eq!(planner_row.name, "CostModel");
         assert!(
             planner_row.mean_recall >= 0.9,
             "planner recall {} too low",
             planner_row.mean_recall
+        );
+    }
+
+    #[test]
+    fn rule_ladder_baseline_keeps_m4_strategy_choices() {
+        let planner = PlannerConfig {
+            flat_threshold: 20,
+            ..Default::default()
+        };
+        let broad = QueryShape::new(100_000, 60_000, 10, CorrelationClass::Neutral);
+        let anti = QueryShape::new(100_000, 60_000, 10, CorrelationClass::AntiCorrelated);
+        let strict = QueryShape::new(1_000_000, 3_000, 10, CorrelationClass::Neutral);
+        let middle = QueryShape::new(100_000, 10_000, 10, CorrelationClass::Neutral);
+
+        assert_eq!(
+            choose_rule_ladder_plan(&broad, &planner).strategy,
+            PlannedStrategy::PostFilter
+        );
+        assert_eq!(
+            choose_rule_ladder_plan(&anti, &planner).strategy,
+            PlannedStrategy::Acorn
+        );
+        assert_eq!(
+            choose_rule_ladder_plan(&strict, &planner).strategy,
+            PlannedStrategy::Acorn
+        );
+        assert_eq!(
+            choose_rule_ladder_plan(&middle, &planner).strategy,
+            PlannedStrategy::InTraversal
         );
     }
 

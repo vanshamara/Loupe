@@ -7,7 +7,7 @@ use std::fs::OpenOptions;
 use std::io::{self, Write};
 
 use clap::{Parser, Subcommand};
-use loupe_advisor::advise;
+use loupe_advisor::{Recommendation, advise};
 use loupe_distance::Metric;
 use loupe_engine::{
     Collection, CollectionStats, ExplainSearch, PlanReport, QueryLogRecord, SegmentStats, Value,
@@ -72,6 +72,10 @@ enum Command {
     Advise {
         #[arg(long)]
         log: String,
+        #[arg(long)]
+        markdown_out: Option<String>,
+        #[arg(long)]
+        planner_summary_csv: Option<String>,
     },
     /// Delete a vector by id from a durable collection.
     Delete {
@@ -136,7 +140,15 @@ fn main() {
             planner_summary_csv.as_deref(),
             feedback_log.as_deref(),
         ),
-        Command::Advise { log } => advise_log(&log),
+        Command::Advise {
+            log,
+            markdown_out,
+            planner_summary_csv,
+        } => advise_log(
+            &log,
+            markdown_out.as_deref(),
+            planner_summary_csv.as_deref(),
+        ),
         Command::Delete { dir, id } => delete(&dir, id),
         Command::Compact { dir } => compact(&dir),
         Command::Stats { dir } => stats(&dir),
@@ -465,8 +477,31 @@ fn replay_planner_summary_csv(summary: &ReplayPlannerSummary) -> String {
     csv
 }
 
-fn advise_log(log: &str) -> io::Result<()> {
-    let content = std::fs::read_to_string(log)?;
+fn advise_log(
+    log: &str,
+    markdown_out: Option<&str>,
+    planner_summary_csv: Option<&str>,
+) -> io::Result<()> {
+    let records = read_query_log(log)?;
+    let recommendations = advise(&records);
+    print_recommendations(&records, &recommendations);
+
+    if let Some(path) = markdown_out {
+        let planner_summary = match planner_summary_csv {
+            Some(path) => Some(read_planner_summary_csv(path)?),
+            None => None,
+        };
+        let report =
+            retrieval_health_report(&records, &recommendations, planner_summary.as_deref());
+        std::fs::write(path, report)?;
+        println!("retrieval health report: {path}");
+    }
+
+    Ok(())
+}
+
+fn read_query_log(path: &str) -> io::Result<Vec<QueryLogRecord>> {
+    let content = std::fs::read_to_string(path)?;
     let mut records: Vec<QueryLogRecord> = Vec::new();
     for line in content.lines() {
         if line.trim().is_empty() {
@@ -474,20 +509,203 @@ fn advise_log(log: &str) -> io::Result<()> {
         }
         records.push(serde_json::from_str(line).map_err(io::Error::other)?);
     }
+    Ok(records)
+}
 
-    let recommendations = advise(&records);
+fn print_recommendations(records: &[QueryLogRecord], recommendations: &[Recommendation]) {
     if recommendations.is_empty() {
         println!("no recommendations from {} queries", records.len());
-        return Ok(());
+        return;
     }
     println!("recommendations from {} queries:", records.len());
-    for recommendation in &recommendations {
+    for recommendation in recommendations {
         println!(
             "  [{}] {}: {}",
             recommendation.category, recommendation.filter, recommendation.message
         );
     }
-    Ok(())
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct PlannerSummaryRow {
+    planner: String,
+    mean_recall: f64,
+    mean_distance_computations: f64,
+    regret: f64,
+    regret_delta: f64,
+}
+
+fn read_planner_summary_csv(path: &str) -> io::Result<Vec<PlannerSummaryRow>> {
+    let content = std::fs::read_to_string(path)?;
+    let mut rows = Vec::new();
+    for (line_number, line) in content.lines().enumerate() {
+        if line.trim().is_empty() || line_number == 0 {
+            continue;
+        }
+        let fields: Vec<&str> = line.split(',').collect();
+        if fields.len() != 5 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid planner summary row: {line}"),
+            ));
+        }
+        rows.push(PlannerSummaryRow {
+            planner: fields[0].to_string(),
+            mean_recall: parse_csv_number(fields[1])?,
+            mean_distance_computations: parse_csv_number(fields[2])?,
+            regret: parse_csv_number(fields[3])?,
+            regret_delta: parse_csv_number(fields[4])?,
+        });
+    }
+    Ok(rows)
+}
+
+fn parse_csv_number(value: &str) -> io::Result<f64> {
+    value
+        .parse::<f64>()
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+}
+
+fn retrieval_health_report(
+    records: &[QueryLogRecord],
+    recommendations: &[Recommendation],
+    planner_summary: Option<&[PlannerSummaryRow]>,
+) -> String {
+    let mut report = String::new();
+    let count = records.len();
+    let average_latency = mean_u64(records.iter().map(|record| record.latency_micros));
+    let average_returned = mean_usize(records.iter().map(|record| record.returned.len()));
+    let average_k = mean_usize(records.iter().map(|record| record.k));
+    let average_recall = mean_f32(records.iter().filter_map(|record| record.recall_smoke));
+    let tombstoned_visits: u64 = records
+        .iter()
+        .map(|record| u64::from(record.metrics.tombstoned_visits))
+        .sum();
+    let plan_mix = count_by(records.iter().map(|record| {
+        record
+            .plan
+            .clone()
+            .unwrap_or_else(|| "(unknown)".to_string())
+    }));
+
+    report.push_str("# Retrieval Health Report\n\n");
+    report.push_str("## Workload\n\n");
+    report.push_str(&format!("- Queries: {count}\n"));
+    report.push_str(&format!("- Average latency: {average_latency:.0} us\n"));
+    report.push_str(&format!(
+        "- Average returned: {average_returned:.1} of {average_k:.1}\n"
+    ));
+    match average_recall {
+        Some(recall) => report.push_str(&format!("- Average recall smoke: {recall:.3}\n")),
+        None => report.push_str("- Average recall smoke: not recorded\n"),
+    }
+    report.push_str(&format!("- Tombstoned visits: {tombstoned_visits}\n"));
+    report.push('\n');
+
+    report.push_str("## Plan Mix\n\n");
+    if plan_mix.is_empty() {
+        report.push_str("- No plans recorded\n\n");
+    } else {
+        for (plan, total) in sorted_counts(&plan_mix) {
+            report.push_str(&format!("- `{plan}`: {total}\n"));
+        }
+        report.push('\n');
+    }
+
+    report.push_str("## Collection Signals\n\n");
+    if tombstoned_visits == 0 {
+        report.push_str("- No tombstone pressure recorded\n\n");
+    } else {
+        report.push_str(&format!(
+            "- Search visited {tombstoned_visits} tombstoned nodes; run `loupe stats` and compact if the dead-node rate is high\n\n"
+        ));
+    }
+
+    report.push_str("## Planner Regret\n\n");
+    if let Some(rows) = planner_summary {
+        report.push_str("| Planner | Mean recall | Mean dist/query | Regret | Regret delta |\n");
+        report.push_str("| --- | ---: | ---: | ---: | ---: |\n");
+        for row in rows {
+            report.push_str(&format!(
+                "| {} | {:.6} | {:.3} | {:.6} | {:.6} |\n",
+                row.planner,
+                row.mean_recall,
+                row.mean_distance_computations,
+                row.regret,
+                row.regret_delta
+            ));
+        }
+    } else {
+        report.push_str(
+            "Planner regret was not provided. Pass `--planner-summary-csv` to include it.\n",
+        );
+    }
+    report.push('\n');
+
+    report.push_str("## Recommendations\n\n");
+    if recommendations.is_empty() {
+        report.push_str("- No recommendations\n");
+    } else {
+        for recommendation in recommendations {
+            report.push_str(&format!(
+                "- `{}` on `{}`: {}\n",
+                recommendation.category, recommendation.filter, recommendation.message
+            ));
+        }
+    }
+
+    report
+}
+
+fn count_by(values: impl Iterator<Item = String>) -> HashMap<String, usize> {
+    let mut counts = HashMap::new();
+    for value in values {
+        *counts.entry(value).or_default() += 1;
+    }
+    counts
+}
+
+fn sorted_counts(counts: &HashMap<String, usize>) -> Vec<(&str, usize)> {
+    let mut items: Vec<(&str, usize)> = counts
+        .iter()
+        .map(|(value, count)| (value.as_str(), *count))
+        .collect();
+    items.sort_by(|left, right| right.1.cmp(&left.1).then(left.0.cmp(right.0)));
+    items
+}
+
+fn mean_u64(values: impl Iterator<Item = u64>) -> f64 {
+    let mut sum = 0u64;
+    let mut count = 0usize;
+    for value in values {
+        sum += value;
+        count += 1;
+    }
+    sum as f64 / count.max(1) as f64
+}
+
+fn mean_usize(values: impl Iterator<Item = usize>) -> f64 {
+    let mut sum = 0usize;
+    let mut count = 0usize;
+    for value in values {
+        sum += value;
+        count += 1;
+    }
+    sum as f64 / count.max(1) as f64
+}
+
+fn mean_f32(values: impl Iterator<Item = f32>) -> Option<f32> {
+    let mut sum = 0.0f32;
+    let mut count = 0usize;
+    for value in values {
+        sum += value;
+        count += 1;
+    }
+    if count == 0 {
+        return None;
+    }
+
+    Some(sum / count as f32)
 }
 
 fn delete(dir: &str, id: u32) -> io::Result<()> {
@@ -723,6 +941,25 @@ mod tests {
         }
     }
 
+    fn planner_summary_rows() -> Vec<PlannerSummaryRow> {
+        vec![
+            PlannerSummaryRow {
+                planner: "RuleLadder".to_string(),
+                mean_recall: 0.0,
+                mean_distance_computations: 260.0,
+                regret: 1.0,
+                regret_delta: 1.0,
+            },
+            PlannerSummaryRow {
+                planner: "CostModel".to_string(),
+                mean_recall: 1.0,
+                mean_distance_computations: 5_000.0,
+                regret: 0.0,
+                regret_delta: 1.0,
+            },
+        ]
+    }
+
     #[test]
     fn stats_output_reports_health_fields() {
         let output = format_collection_stats(&collection_stats(true));
@@ -735,6 +972,56 @@ mod tests {
         assert!(output.contains("segments:               1"));
         assert!(output.contains("compaction recommended: yes"));
         assert!(output.contains("0  200  150  50  25.00%"));
+    }
+
+    #[test]
+    fn retrieval_health_report_summarizes_workload() {
+        let mut first = query_log("cat=math", Some(0.8));
+        first.plan = Some("Acorn+AdaptiveEf".to_string());
+        first.latency_micros = 100;
+        first.metrics.tombstoned_visits = 2;
+        let mut second = query_log("cat=math", Some(0.6));
+        second.plan = Some("Flat".to_string());
+        second.latency_micros = 300;
+        second.metrics.tombstoned_visits = 3;
+        let records = vec![first, second];
+        let recommendations = vec![Recommendation {
+            category: "low_recall",
+            filter: "cat=math".to_string(),
+            message: "low recall (0.70); use a wider beam or an exact scan".to_string(),
+        }];
+        let planner_summary = planner_summary_rows();
+
+        let report = retrieval_health_report(&records, &recommendations, Some(&planner_summary));
+
+        assert!(report.contains("# Retrieval Health Report"));
+        assert!(report.contains("- Queries: 2"));
+        assert!(report.contains("- Average latency: 200 us"));
+        assert!(report.contains("- Average returned: 3.0 of 10.0"));
+        assert!(report.contains("- Average recall smoke: 0.700"));
+        assert!(report.contains("- Tombstoned visits: 5"));
+        assert!(report.contains("- `Acorn+AdaptiveEf`: 1"));
+        assert!(report.contains("Search visited 5 tombstoned nodes"));
+        assert!(report.contains("| RuleLadder | 0.000000 | 260.000 | 1.000000 | 1.000000 |"));
+        assert!(report.contains("- `low_recall` on `cat=math`: low recall"));
+    }
+
+    #[test]
+    fn reads_planner_summary_csv_for_health_report() {
+        let path =
+            std::env::temp_dir().join(format!("loupe-planner-summary-{}.csv", std::process::id()));
+        std::fs::write(
+            &path,
+            "planner,mean_recall,mean_distance_computations,regret,regret_delta\n\
+RuleLadder,0.000000,260.000,1.000000,1.000000\n\
+CostModel,1.000000,5000.000,0.000000,1.000000\n",
+        )
+        .unwrap();
+
+        let rows = read_planner_summary_csv(path.to_str().unwrap()).unwrap();
+        std::fs::remove_file(path).unwrap();
+
+        assert_eq!(rows, planner_summary_rows());
     }
 
     #[test]

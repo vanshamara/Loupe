@@ -192,6 +192,17 @@ planner summary uses EXPLAIN counterfactuals to score `RuleLadder` and
 with `recall_smoke` values, replay feeds that historical miss rate into the cost
 model before planning.
 
+Generate a Markdown retrieval-health report from the same log:
+
+```
+loupe advise --log /tmp/loupe-query-log.jsonl \
+  --markdown-out /tmp/loupe-health.md \
+  --planner-summary-csv /tmp/loupe-replay-planners.csv
+```
+
+The report includes workload-level latency, returned counts, recall smoke, plan
+mix, planner regret, tombstone pressure, and advisor recommendations.
+
 Check collection health after deletes:
 
 ```

@@ -232,11 +232,11 @@ pub fn write_matrix_csv(path: &str, results: &[CellResult]) -> io::Result<()> {
 /// Returns matrix results as CSV text.
 pub fn matrix_csv(results: &[CellResult]) -> String {
     let mut csv = String::from(
-        "selectivity,correlation,runner,strategy_chosen,recall,distance_computations,latency_micros,returned_count\n",
+        "engine,selectivity,correlation,runner,strategy_chosen,recall,distance_computations,latency_micros,returned_count\n",
     );
     for row in results {
         csv.push_str(&format!(
-            "{:.6},{},{},{},{:.6},{:.3},{:.3},{:.3}\n",
+            "loupe,{:.6},{},{},{},{:.6},{:.3},{:.3},{:.3}\n",
             row.selectivity,
             correlation_name(row.correlation),
             strategy_name(row.strategy),
@@ -663,9 +663,9 @@ mod tests {
         let csv = matrix_csv(&rows);
 
         assert!(csv.starts_with(
-            "selectivity,correlation,runner,strategy_chosen,recall,distance_computations,latency_micros,returned_count\n"
+            "engine,selectivity,correlation,runner,strategy_chosen,recall,distance_computations,latency_micros,returned_count\n"
         ));
-        assert!(csv.contains("0.010000,anti_correlated,Planner,Acorn+AdaptiveEf"));
+        assert!(csv.contains("loupe,0.010000,anti_correlated,Planner,Acorn+AdaptiveEf"));
     }
 
     fn metadata_setup() -> (HnswIndex, MetadataStore) {

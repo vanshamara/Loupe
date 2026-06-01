@@ -99,7 +99,7 @@ The explaining only means something because the engine under it is real:
 | M2 | Filtered search: the strategies | ✅ done |
 | M3 | Correlation-aware benchmark matrix plus arXiv corpus | ✅ done |
 | M4 | Rule-based planner plus EXPLAIN SEARCH (counterfactual and regret) | ✅ done |
-| M5 | Comparison vs FAISS / Qdrant / Weaviate / pgvector | ⬜ |
+| M5 | Comparison vs FAISS / Qdrant / Weaviate / pgvector | 🟡 in progress |
 | M6 | Query-log advisor | ✅ done |
 | M7 | Disk-backed storage (mmap) | ✅ done |
 | M8 | WAL plus crash recovery | ✅ done |
@@ -121,10 +121,11 @@ The search looks at roughly 660 vectors per query instead of all 10,000, so it i
 already skipping most of the work. Numbers on the full million-vector set land
 with the benchmark suite.
 
-Coming in M5: recall and speed plots against FAISS, Qdrant, Weaviate, and
-pgvector, across the selectivity and correlation grid (synthetic plus arXiv). The
-headline case is 0.1% of rows passing the filter while sitting far from the
-query, where simple filtering falls apart and the planner pays off.
+M5 is in progress. Loupe now exports matrix CSVs and Loupe-only SVG plots. The
+first external baseline is FAISS HNSW with post-filtering, which gives a simple
+competitor before the Docker-backed systems. Qdrant, Weaviate, and pgvector come
+after that. The headline case is 0.1% of rows passing the filter while sitting
+far from the query, where simple filtering falls apart and the planner pays off.
 
 The benchmark runner also includes a compaction probe. It deletes a controlled
 slice of a durable collection, reports tombstoned visits, distance work, latency,
@@ -181,9 +182,27 @@ cargo run --release -p loupe-bench --bin loupe-bench -- \
 ```
 
 The CSV contains one row per selectivity and correlation cell, including the
-runner, strategy chosen, recall, distance work, latency, and returned count.
+engine, runner, strategy chosen, recall, distance work, latency, and returned
+count.
 The plot directory contains Loupe-only SVGs for fixed strategies vs the planner,
 hard filter cells, where `Acorn+AdaptiveEf` wins, and where `Flat` wins.
+
+Run the first external baseline with FAISS:
+
+```
+python3.11 -m venv .venv
+. .venv/bin/activate
+python -m pip install -r scripts/requirements-faiss.txt
+python bench/faiss_baseline.py \
+  datasets/siftsmall/siftsmall_base.fvecs \
+  datasets/siftsmall/siftsmall_query.fvecs \
+  datasets/siftsmall/siftsmall_groundtruth.ivecs \
+  --out /tmp/faiss-matrix.csv
+```
+
+FAISS does not expose HNSW distance-computation counts through its Python API, so
+the FAISS CSV uses the searched candidate count as that column. It is still useful
+for recall, latency, returned count, and side-by-side plots.
 
 For the full million-vector set, run the download script with `sift` instead of
 `siftsmall`, then point the command at the `sift_*` files.

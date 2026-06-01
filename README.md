@@ -122,10 +122,10 @@ already skipping most of the work. Numbers on the full million-vector set land
 with the benchmark suite.
 
 M5 is in progress. Loupe now exports matrix CSVs and Loupe-only SVG plots. The
-first external baseline is FAISS HNSW with post-filtering, which gives a simple
-competitor before the Docker-backed systems. Qdrant, Weaviate, and pgvector come
-after that. The headline case is 0.1% of rows passing the filter while sitting
-far from the query, where simple filtering falls apart and the planner pays off.
+external adapters cover FAISS, Qdrant, Weaviate, and pgvector. The next step is
+running them on the full matrix and turning the CSVs into comparison plots. The
+headline case is 0.1% of rows passing the filter while sitting far from the
+query, where simple filtering falls apart and the planner pays off.
 
 The benchmark runner also includes a compaction probe. It deletes a controlled
 slice of a durable collection, reports tombstoned visits, distance work, latency,
@@ -203,6 +203,32 @@ python bench/faiss_baseline.py \
 FAISS does not expose HNSW distance-computation counts through its Python API, so
 the FAISS CSV uses the searched candidate count as that column. It is still useful
 for recall, latency, returned count, and side-by-side plots.
+
+Run the Docker-backed baselines:
+
+```
+docker compose -f docker/benchmark-compose.yml up -d qdrant weaviate pgvector
+python -m pip install -r scripts/requirements-competitors.txt
+python bench/qdrant_baseline.py \
+  datasets/siftsmall/siftsmall_base.fvecs \
+  datasets/siftsmall/siftsmall_query.fvecs \
+  datasets/siftsmall/siftsmall_groundtruth.ivecs \
+  --out /tmp/qdrant-matrix.csv
+python bench/weaviate_baseline.py \
+  datasets/siftsmall/siftsmall_base.fvecs \
+  datasets/siftsmall/siftsmall_query.fvecs \
+  datasets/siftsmall/siftsmall_groundtruth.ivecs \
+  --out /tmp/weaviate-matrix.csv
+python bench/pgvector_baseline.py \
+  datasets/siftsmall/siftsmall_base.fvecs \
+  datasets/siftsmall/siftsmall_query.fvecs \
+  datasets/siftsmall/siftsmall_groundtruth.ivecs \
+  --out /tmp/pgvector-matrix.csv
+```
+
+External engines do not expose the same distance-computation counter Loupe does.
+For those rows, the CSV uses the returned candidate count from the engine as a
+cost proxy.
 
 For the full million-vector set, run the download script with `sift` instead of
 `siftsmall`, then point the command at the `sift_*` files.

@@ -4,6 +4,7 @@ from pathlib import Path
 
 import numpy as np
 
+from bench import benchmark_common
 from bench import faiss_baseline
 
 
@@ -36,13 +37,13 @@ class FaissBaselineTests(unittest.TestCase):
 
     def test_fvecs_loader_reads_sift_records(self):
         path = self.write_temp(fvecs_bytes([[1.0, 2.0], [3.0, 4.0]]))
-        vectors = faiss_baseline.read_fvecs(path)
+        vectors = benchmark_common.read_fvecs(path)
 
         np.testing.assert_allclose(vectors, np.array([[1.0, 2.0], [3.0, 4.0]]))
 
     def test_ivecs_loader_reads_sift_records(self):
         path = self.write_temp(ivecs_bytes([[1, 2], [3, 4]]))
-        rows = faiss_baseline.read_ivecs(path)
+        rows = benchmark_common.read_ivecs(path)
 
         np.testing.assert_array_equal(rows, np.array([[1, 2], [3, 4]], dtype=np.int32))
 
@@ -50,8 +51,8 @@ class FaissBaselineTests(unittest.TestCase):
         base = np.array([[float(i), float(i)] for i in range(100)], dtype=np.float32)
         query = np.array([50.0, 50.0], dtype=np.float32)
 
-        positive = faiss_baseline.generate_filter(base, query, 0.1, "positive", 1)
-        anti = faiss_baseline.generate_filter(base, query, 0.1, "anti_correlated", 1)
+        positive = benchmark_common.generate_filter(base, query, 0.1, "positive", 1)
+        anti = benchmark_common.generate_filter(base, query, 0.1, "anti_correlated", 1)
 
         self.assertIn(50, positive)
         self.assertNotIn(0, positive)
@@ -71,12 +72,12 @@ class FaissBaselineTests(unittest.TestCase):
         query = np.array([0.0, 0.0], dtype=np.float32)
         allowed = np.array([1, 2, 3], dtype=np.int64)
 
-        result = faiss_baseline.exact_filtered_search(base, query, allowed, 2)
+        result = benchmark_common.exact_filtered_search(base, query, allowed, 2)
 
         self.assertEqual(result, [3, 2])
 
     def test_csv_writer_uses_shared_schema(self):
-        row = faiss_baseline.MatrixRow(
+        row = benchmark_common.MatrixRow(
             engine="faiss",
             selectivity=0.01,
             correlation="anti_correlated",
@@ -90,10 +91,10 @@ class FaissBaselineTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             output = Path(temp_dir) / "faiss.csv"
-            faiss_baseline.write_csv(output, [row])
+            benchmark_common.write_csv(output, [row])
             text = output.read_text()
 
-        self.assertTrue(text.startswith(",".join(faiss_baseline.CSV_FIELDS)))
+        self.assertTrue(text.startswith(",".join(benchmark_common.CSV_FIELDS)))
         self.assertIn("faiss,0.010000,anti_correlated", text)
 
 

@@ -42,8 +42,44 @@ plans would have done. Loupe does.
 In one line: Qdrant, Weaviate, and Pinecone do filtered search. Loupe lets you
 inspect it, replay it, and tune it.
 
-A short guide on when to pick Loupe over pgvector or Pinecone is coming once the
-benchmarks are in.
+## When to use Loupe
+
+Use Loupe when filtered recall is part of the product, not just an implementation
+detail. The strong fit is a search system with tenant filters, permissions,
+document types, date ranges, or other metadata filters where bad recall is hard
+to debug from the outside.
+
+Use pgvector when your vectors belong next to relational data and Postgres is
+already the system of record. pgvector is an open-source vector similarity search
+extension for Postgres, so it is the simple choice when SQL, transactions, and
+one operational stack matter more than per-query planner visibility.
+
+Use Pinecone when you want a managed service and do not want to own the search
+engine. Pinecone runs as a managed vector database service on major cloud
+platforms. That is a good trade when operations matter more than seeing every
+plan choice.
+
+Use Qdrant or Weaviate when you want a mature vector database with filtering
+already built in. Weaviate documents ACORN as its default filter strategy, and
+Qdrant documents payload filtering as a core search feature. Loupe is different
+because it is built around showing the plan, replaying the workload, and measuring
+regret.
+
+Do not use Loupe yet when you need a production SLA, hosted operations, mature
+client libraries, or a large cluster story today. Loupe is still early. The point
+right now is explainable filtered search, cost-model research, and a real engine
+that makes the planner claims testable.
+
+Sources for the comparison: [pgvector](https://github.com/pgvector/pgvector),
+[Pinecone architecture](https://docs.pinecone.io/reference/architecture/serverless-architecture),
+[Weaviate filtering](https://docs.weaviate.io/weaviate/concepts/filtering), and
+[Qdrant filtering](https://qdrant.tech/documentation/search/filtering/).
+
+The short war story: a user searches inside one tenant and one document type.
+The nearest vectors overall are outside that filter, so post-filtering returns
+weak results or too few rows. Loupe detects that the filter is working against
+the query, chooses a stricter traversal, shows the rejected plans, and lets you
+replay the same workload after a planner or compaction change.
 
 ---
 

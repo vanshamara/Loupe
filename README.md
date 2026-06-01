@@ -85,6 +85,8 @@ replay the same workload after a planner or compaction change.
 
 ## Architecture
 
+For the deeper system writeup, see [docs/architecture.md](docs/architecture.md).
+
 ```mermaid
 flowchart TD
     C[gRPC / CLI] --> E[engine: collection API]
@@ -162,10 +164,24 @@ with the benchmark suite.
 
 M5 is in progress. Loupe now exports matrix CSVs, Loupe-only SVG plots, external
 baselines for FAISS, Qdrant, Weaviate, and pgvector, and a packaged `siftsmall`
-smoke result. The next step is running the same shape on larger datasets and
-real metadata. The headline case is 0.1% of rows passing the filter while
-sitting far from the query, where simple filtering falls apart and the planner
-pays off.
+smoke result. The current all-engine smoke bundle is
+`bench/results/siftsmall-m5-all-engines-2026-06-01/summary.md`, run on the first
+100 `siftsmall` queries:
+
+| Engine | Mean recall | Min recall | Hard-filter recall | Mean latency |
+|---|---:|---:|---:|---:|
+| Loupe Planner | 0.995 | 0.949 | 1.000 | 816.2 us |
+| FAISS | 0.621 | 0.000 | 0.000 | 387.4 us |
+| Qdrant | 1.000 | 0.999 | 1.000 | 2706.3 us |
+| pgvector | 1.000 | 1.000 | 1.000 | 2745.7 us |
+| Weaviate | 1.000 | 0.999 | 1.000 | 12749.1 us |
+
+This is a smoke test, not the final scale proof. It shows the shape of the
+tradeoff: FAISS is faster but fails hard filtered cells, while Qdrant, pgvector,
+and Weaviate keep perfect or near-perfect recall with higher latency. Loupe is
+faster than those service-style baselines on this run and keeps hard-filter
+recall at 1.000, but its minimum recall is lower. The next step is the same
+Loupe-vs-FAISS shape on SIFT1M, then a bigger all-engine run on a larger CPU box.
 
 The benchmark runner also includes a compaction probe. It deletes a controlled
 slice of a durable collection, reports tombstoned visits, distance work, latency,

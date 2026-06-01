@@ -4,6 +4,10 @@
 //! live in memory now and in memory-mapped files later, and the search code
 //! never has to change.
 
+mod mmap;
+
+pub use mmap::{MmapVectorStore, write_vector_segment};
+
 /// Identifier for a stored vector. `u32` matches the id space used by the filter
 /// bitmaps later on.
 pub type VectorId = u32;

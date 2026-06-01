@@ -58,6 +58,8 @@ enum Command {
         compare_planners: bool,
         #[arg(long)]
         planner_summary_csv: Option<String>,
+        #[arg(long)]
+        feedback_log: Option<String>,
     },
     /// Read a query log and print the advisor's recommendations.
     Advise {
@@ -111,6 +113,7 @@ fn main() {
             k,
             compare_planners,
             planner_summary_csv,
+            feedback_log,
         } => replay(
             &dir,
             &query,
@@ -119,6 +122,7 @@ fn main() {
             k,
             compare_planners,
             planner_summary_csv.as_deref(),
+            feedback_log.as_deref(),
         ),
         Command::Advise { log } => advise_log(&log),
         Command::Delete { dir, id } => delete(&dir, id),
@@ -186,12 +190,21 @@ fn replay(
     k: usize,
     compare_planners: bool,
     planner_summary_csv: Option<&str>,
+    feedback_log: Option<&str>,
 ) -> io::Result<()> {
     let manifest: Manifest = serde_json::from_str(&std::fs::read_to_string(manifest_path(dir))?)
         .map_err(io::Error::other)?;
-    let collection = Collection::open(dir, manifest.dim, manifest.metric)?;
+    let mut collection = Collection::open(dir, manifest.dim, manifest.metric)?;
     let queries = read_records(query)?;
     let expr = parse_filter(filter).map_err(io::Error::other)?;
+    if let Some(path) = feedback_log {
+        if let Some(rate) = historical_miss_rate_from_log(path, filter)? {
+            collection.set_historical_miss_rate(rate);
+            println!("historical miss rate: {rate:.3} from {path}");
+        } else {
+            println!("historical miss rate: no recall_smoke rows for filter {filter:?}");
+        }
+    }
     let planner_config = PlannerConfig::default();
     let mut planner_summary = if compare_planners || planner_summary_csv.is_some() {
         Some(ReplayPlannerSummary::default())
@@ -232,6 +245,32 @@ fn replay(
     }
     println!("log appended to {out}");
     Ok(())
+}
+
+fn historical_miss_rate_from_log(path: &str, filter: &str) -> io::Result<Option<f32>> {
+    let content = std::fs::read_to_string(path)?;
+    let mut miss_sum = 0.0f32;
+    let mut count = 0usize;
+
+    for line in content.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let record: QueryLogRecord = serde_json::from_str(line).map_err(io::Error::other)?;
+        if record.filter.as_deref() != Some(filter) {
+            continue;
+        }
+        if let Some(recall) = record.recall_smoke {
+            miss_sum += 1.0 - recall.clamp(0.0, 1.0);
+            count += 1;
+        }
+    }
+
+    if count == 0 {
+        return Ok(None);
+    }
+
+    Ok(Some(miss_sum / count as f32))
 }
 
 #[derive(Default)]
@@ -552,6 +591,19 @@ mod tests {
         }
     }
 
+    fn query_log(filter: &str, recall_smoke: Option<f32>) -> QueryLogRecord {
+        QueryLogRecord {
+            query_id: 1,
+            k: 10,
+            latency_micros: 10,
+            returned: vec![1, 2, 3],
+            metrics: Default::default(),
+            filter: Some(filter.to_string()),
+            plan: Some("PostFilter+AdaptiveEf".to_string()),
+            recall_smoke,
+        }
+    }
+
     #[test]
     fn rule_ladder_plan_name_matches_m4_choices() {
         let config = PlannerConfig::default();
@@ -610,5 +662,30 @@ mod tests {
 
         assert!(csv.contains("RuleLadder,1.000000,300.000,0.000000,-1.000000"));
         assert!(csv.contains("CostModel,0.500000,100.000,1.000000,-1.000000"));
+    }
+
+    #[test]
+    fn historical_miss_rate_reads_matching_recall_smoke() {
+        let path =
+            std::env::temp_dir().join(format!("loupe-feedback-{}.jsonl", std::process::id()));
+        let records = [
+            query_log("cat=math", Some(0.8)),
+            query_log("cat=math", Some(0.6)),
+            query_log("cat=cs", Some(0.1)),
+            query_log("cat=math", None),
+        ];
+        let content = records
+            .iter()
+            .map(|record| serde_json::to_string(record).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(&path, content).unwrap();
+
+        let rate = historical_miss_rate_from_log(path.to_str().unwrap(), "cat=math")
+            .unwrap()
+            .unwrap();
+        std::fs::remove_file(path).unwrap();
+
+        assert!((rate - 0.3).abs() < 0.001);
     }
 }

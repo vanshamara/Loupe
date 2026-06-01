@@ -88,6 +88,7 @@ pub struct Collection {
     index: HnswIndex,
     metadata: MetadataStore,
     planner: PlannerConfig,
+    historical_miss_rate: f32,
     correlation_samples: usize,
     seed: u64,
     wal: Option<WriteAheadLog>,
@@ -103,6 +104,7 @@ impl Collection {
             index: HnswIndex::new(dim, metric, loupe_hnsw::HnswConfig::default()),
             metadata: MetadataStore::new(),
             planner: PlannerConfig::default(),
+            historical_miss_rate: 0.0,
             correlation_samples: 32,
             seed: 1,
             wal: None,
@@ -152,6 +154,11 @@ impl Collection {
     /// Replaces the planner thresholds (used in tests and tuning).
     pub fn set_planner(&mut self, planner: PlannerConfig) {
         self.planner = planner;
+    }
+
+    /// Sets the planner's workload-level recall miss signal.
+    pub fn set_historical_miss_rate(&mut self, rate: f32) {
+        self.historical_miss_rate = rate.clamp(0.0, 1.0);
     }
 
     /// Replaces the automatic compaction trigger.
@@ -401,6 +408,7 @@ impl Collection {
         let correlation = classify_correlation(score, self.planner.correlation_band);
         let mut shape = QueryShape::new(total as usize, matching_count as usize, k, correlation);
         shape.candidate_count = self.planner.ef.max(k);
+        shape.historical_miss_rate = self.historical_miss_rate;
         let plan = choose_plan(&shape, &self.planner);
 
         let flat_plan = report_plan(PlannedStrategy::Flat, &plan);
@@ -476,6 +484,7 @@ impl Collection {
         let correlation = classify_correlation(score, self.planner.correlation_band);
         let mut shape = QueryShape::new(total as usize, allowed.len() as usize, k, correlation);
         shape.candidate_count = self.planner.ef.max(k);
+        shape.historical_miss_rate = self.historical_miss_rate;
         choose_plan(&shape, &self.planner)
     }
 
@@ -777,6 +786,36 @@ mod tests {
         for neighbor in &results {
             assert_eq!(neighbor.id % 2, 0);
         }
+    }
+
+    #[test]
+    fn historical_misses_change_planner_choice() {
+        let mut collection = Collection::new(2, Metric::L2);
+        collection.set_planner(PlannerConfig {
+            flat_threshold: 5,
+            strict_selectivity: 0.01,
+            broad_selectivity: 0.4,
+            ef: 10,
+            max_ef: 128,
+            correlation_band: 0.1,
+            ..PlannerConfig::default()
+        });
+
+        for i in 0..200u32 {
+            let category = if i % 2 == 0 { "even" } else { "odd" };
+            collection.insert(
+                &[i as f32, i as f32],
+                &[("cat", Value::Str(category.into()))],
+            );
+        }
+
+        let filter = Expr::Eq("cat".into(), Value::Str("even".into()));
+        let (_, baseline) = collection.search(&[80.0, 80.0], &filter, 10);
+        collection.set_historical_miss_rate(0.8);
+        let (_, adjusted) = collection.search(&[80.0, 80.0], &filter, 10);
+
+        assert_eq!(baseline.strategy, PlannedStrategy::PostFilter);
+        assert_ne!(adjusted.strategy, PlannedStrategy::PostFilter);
     }
 
     #[test]

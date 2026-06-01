@@ -175,12 +175,15 @@ Replay a saved workload and compare the old rule ladder with the live cost model
 ```
 loupe replay --dir /tmp/loupe-arxiv --query datasets/arxiv/arxiv_query.jsonl \
   --filter "category=math.PR" --out /tmp/loupe-query-log.jsonl \
-  --compare-planners --planner-summary-csv /tmp/loupe-replay-planners.csv
+  --compare-planners --planner-summary-csv /tmp/loupe-replay-planners.csv \
+  --feedback-log /tmp/loupe-validation-log.jsonl
 ```
 
 The replay log still records the live planner choice for each query. The optional
 planner summary uses EXPLAIN counterfactuals to score `RuleLadder` and
-`CostModel` on the same workload.
+`CostModel` on the same workload. If `--feedback-log` points at prior query logs
+with `recall_smoke` values, replay feeds that historical miss rate into the cost
+model before planning.
 
 ## Quickstart
 

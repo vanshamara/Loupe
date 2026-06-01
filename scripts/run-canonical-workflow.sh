@@ -17,6 +17,7 @@ collection_dir="$work_dir/collection"
 query_log_path="$work_dir/query-log.jsonl"
 planner_summary_path="$work_dir/planner-summary.csv"
 health_report_path="$work_dir/retrieval-health.md"
+metrics_path="$work_dir/metrics.prom"
 explain_before_path="$work_dir/explain-before.txt"
 explain_after_path="$work_dir/explain-after-compact.txt"
 stats_before_path="$work_dir/stats-before-delete.txt"
@@ -114,6 +115,7 @@ rm -f \
   "$query_log_path" \
   "$planner_summary_path" \
   "$health_report_path" \
+  "$metrics_path" \
   "$explain_before_path" \
   "$explain_after_path" \
   "$stats_before_path" \
@@ -160,6 +162,13 @@ echo "deleting vectors to create tombstones"
 delete_vectors
 run_loupe stats --dir "$collection_dir" > "$stats_deleted_path"
 
+echo "exporting Prometheus metrics"
+run_loupe metrics \
+  --log "$query_log_path" \
+  --dir "$collection_dir" \
+  --planner-summary-csv "$planner_summary_path" \
+  --out "$metrics_path"
+
 echo "compacting collection"
 run_loupe compact --dir "$collection_dir" > "$compact_log_path"
 run_loupe stats --dir "$collection_dir" > "$stats_compacted_path"
@@ -173,6 +182,7 @@ echo "  explain before:    $explain_before_path"
 echo "  query log:         $query_log_path"
 echo "  planner summary:   $planner_summary_path"
 echo "  health report:     $health_report_path"
+echo "  metrics:           $metrics_path"
 echo "  stats before:      $stats_before_path"
 echo "  stats after delete:$stats_deleted_path"
 echo "  compact log:       $compact_log_path"

@@ -94,6 +94,17 @@ enum Command {
         #[arg(long)]
         dir: String,
     },
+    /// Export Prometheus metrics from query logs, stats, and planner summaries.
+    Metrics {
+        #[arg(long)]
+        log: Option<String>,
+        #[arg(long)]
+        dir: Option<String>,
+        #[arg(long)]
+        planner_summary_csv: Option<String>,
+        #[arg(long)]
+        out: Option<String>,
+    },
 }
 
 #[derive(Deserialize)]
@@ -152,6 +163,17 @@ fn main() {
         Command::Delete { dir, id } => delete(&dir, id),
         Command::Compact { dir } => compact(&dir),
         Command::Stats { dir } => stats(&dir),
+        Command::Metrics {
+            log,
+            dir,
+            planner_summary_csv,
+            out,
+        } => metrics(
+            log.as_deref(),
+            dir.as_deref(),
+            planner_summary_csv.as_deref(),
+            out.as_deref(),
+        ),
     };
     if let Err(error) = result {
         eprintln!("error: {error}");
@@ -753,6 +775,165 @@ fn stats(dir: &str) -> io::Result<()> {
     Ok(())
 }
 
+fn metrics(
+    log: Option<&str>,
+    dir: Option<&str>,
+    planner_summary_csv: Option<&str>,
+    out: Option<&str>,
+) -> io::Result<()> {
+    let records = match log {
+        Some(path) => read_query_log(path)?,
+        None => Vec::new(),
+    };
+    let stats = match dir {
+        Some(path) => Some(read_collection_stats(path)?),
+        None => None,
+    };
+    let planner_summary = match planner_summary_csv {
+        Some(path) => Some(read_planner_summary_csv(path)?),
+        None => None,
+    };
+    let text = prometheus_metrics(&records, stats.as_ref(), planner_summary.as_deref());
+
+    if let Some(path) = out {
+        std::fs::write(path, text)?;
+        println!("prometheus metrics: {path}");
+        return Ok(());
+    }
+
+    print!("{text}");
+    Ok(())
+}
+
+fn read_collection_stats(dir: &str) -> io::Result<CollectionStats> {
+    let manifest: Manifest = serde_json::from_str(&std::fs::read_to_string(manifest_path(dir))?)
+        .map_err(io::Error::other)?;
+    let collection = Collection::open(dir, manifest.dim, manifest.metric)?;
+    Ok(collection.stats())
+}
+
+fn prometheus_metrics(
+    records: &[QueryLogRecord],
+    stats: Option<&CollectionStats>,
+    planner_summary: Option<&[PlannerSummaryRow]>,
+) -> String {
+    let mut output = String::new();
+    let strategy_stats = strategy_metrics(records);
+    let recall_smoke = mean_f32(records.iter().filter_map(|record| record.recall_smoke));
+
+    output.push_str("# HELP loupe_planner_choice_total Queries by chosen planner strategy.\n");
+    output.push_str("# TYPE loupe_planner_choice_total counter\n");
+    for row in &strategy_stats {
+        output.push_str(&format!(
+            "loupe_planner_choice_total{{strategy=\"{}\"}} {}\n",
+            prometheus_label(&row.strategy),
+            row.count
+        ));
+    }
+
+    output.push_str("# HELP loupe_strategy_return_rate Average returned results divided by requested k for each chosen strategy.\n");
+    output.push_str("# TYPE loupe_strategy_return_rate gauge\n");
+    for row in &strategy_stats {
+        output.push_str(&format!(
+            "loupe_strategy_return_rate{{strategy=\"{}\"}} {:.6}\n",
+            prometheus_label(&row.strategy),
+            row.return_rate
+        ));
+    }
+
+    output.push_str("# HELP loupe_strategy_recall_smoke Average recall_smoke for each chosen strategy when recorded.\n");
+    output.push_str("# TYPE loupe_strategy_recall_smoke gauge\n");
+    for row in &strategy_stats {
+        if let Some(recall) = row.recall_smoke {
+            output.push_str(&format!(
+                "loupe_strategy_recall_smoke{{strategy=\"{}\"}} {:.6}\n",
+                prometheus_label(&row.strategy),
+                recall
+            ));
+        }
+    }
+
+    output.push_str(
+        "# HELP loupe_recall_smoke Average recall_smoke across logged queries when recorded.\n",
+    );
+    output.push_str("# TYPE loupe_recall_smoke gauge\n");
+    if let Some(recall) = recall_smoke {
+        output.push_str(&format!("loupe_recall_smoke {:.6}\n", recall));
+    }
+
+    output.push_str(
+        "# HELP loupe_tombstone_rate Fraction of collection vectors currently tombstoned.\n",
+    );
+    output.push_str("# TYPE loupe_tombstone_rate gauge\n");
+    if let Some(stats) = stats {
+        output.push_str(&format!(
+            "loupe_tombstone_rate {:.6}\n",
+            stats.dead_fraction
+        ));
+        output.push_str("# HELP loupe_deleted_vectors Tombstoned vector count.\n");
+        output.push_str("# TYPE loupe_deleted_vectors gauge\n");
+        output.push_str(&format!("loupe_deleted_vectors {}\n", stats.deleted_count));
+    }
+
+    output.push_str("# HELP loupe_planner_regret Replay regret by planner.\n");
+    output.push_str("# TYPE loupe_planner_regret gauge\n");
+    if let Some(rows) = planner_summary {
+        for row in rows {
+            output.push_str(&format!(
+                "loupe_planner_regret{{planner=\"{}\"}} {:.6}\n",
+                prometheus_label(&row.planner),
+                row.regret
+            ));
+        }
+    }
+
+    output
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct StrategyMetricRow {
+    strategy: String,
+    count: usize,
+    return_rate: f64,
+    recall_smoke: Option<f32>,
+}
+
+fn strategy_metrics(records: &[QueryLogRecord]) -> Vec<StrategyMetricRow> {
+    let mut groups: HashMap<String, Vec<&QueryLogRecord>> = HashMap::new();
+    for record in records {
+        let strategy = record
+            .plan
+            .clone()
+            .unwrap_or_else(|| "(unknown)".to_string());
+        groups.entry(strategy).or_default().push(record);
+    }
+
+    let mut rows = Vec::new();
+    for (strategy, group) in groups {
+        let count = group.len();
+        let returned: usize = group.iter().map(|record| record.returned.len()).sum();
+        let requested: usize = group.iter().map(|record| record.k).sum();
+        let return_rate = returned as f64 / requested.max(1) as f64;
+        let recall_smoke = mean_f32(group.iter().filter_map(|record| record.recall_smoke));
+        rows.push(StrategyMetricRow {
+            strategy,
+            count,
+            return_rate,
+            recall_smoke,
+        });
+    }
+
+    rows.sort_by(|left, right| left.strategy.cmp(&right.strategy));
+    rows
+}
+
+fn prometheus_label(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+}
+
 fn format_collection_stats(stats: &CollectionStats) -> String {
     let mut output = String::new();
     output.push_str("collection stats\n");
@@ -1022,6 +1203,46 @@ CostModel,1.000000,5000.000,0.000000,1.000000\n",
         std::fs::remove_file(path).unwrap();
 
         assert_eq!(rows, planner_summary_rows());
+    }
+
+    #[test]
+    fn prometheus_metrics_include_planner_health_and_stats() {
+        let mut first = query_log("cat=math", Some(0.8));
+        first.plan = Some("Acorn+AdaptiveEf".to_string());
+        first.returned = vec![1, 2, 3, 4, 5];
+        let mut second = query_log("cat=math", Some(0.6));
+        second.plan = Some("Acorn+AdaptiveEf".to_string());
+        second.returned = vec![1, 2, 3];
+        let mut third = query_log("cat=math", Some(1.0));
+        third.plan = Some("Flat".to_string());
+        third.returned = (0..10).collect();
+        let records = vec![first, second, third];
+        let stats = collection_stats(true);
+        let planner_summary = planner_summary_rows();
+
+        let metrics = prometheus_metrics(&records, Some(&stats), Some(&planner_summary));
+
+        assert!(metrics.contains("loupe_planner_choice_total{strategy=\"Acorn+AdaptiveEf\"} 2"));
+        assert!(metrics.contains("loupe_planner_choice_total{strategy=\"Flat\"} 1"));
+        assert!(
+            metrics.contains("loupe_strategy_return_rate{strategy=\"Acorn+AdaptiveEf\"} 0.400000")
+        );
+        assert!(
+            metrics.contains("loupe_strategy_recall_smoke{strategy=\"Acorn+AdaptiveEf\"} 0.700000")
+        );
+        assert!(metrics.contains("loupe_recall_smoke 0.800000"));
+        assert!(metrics.contains("loupe_tombstone_rate 0.250000"));
+        assert!(metrics.contains("loupe_deleted_vectors 50"));
+        assert!(metrics.contains("loupe_planner_regret{planner=\"RuleLadder\"} 1.000000"));
+        assert!(metrics.contains("loupe_planner_regret{planner=\"CostModel\"} 0.000000"));
+    }
+
+    #[test]
+    fn prometheus_labels_are_escaped() {
+        assert_eq!(
+            prometheus_label("bad\"label\\with\nnewline"),
+            "bad\\\"label\\\\with\\nnewline"
+        );
     }
 
     #[test]

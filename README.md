@@ -110,6 +110,7 @@ flowchart TD
 | `loupe advise` | What is wrong across my workload? Reads query logs and suggests fixes. |
 | `loupe replay` | Did my change help? Replays a saved workload and reports before and after. |
 | `loupe stats` | Is my collection healthy? Shows live/deleted counts, fragmentation, and compaction signals. |
+| `loupe metrics` | What should I scrape? Exports Prometheus text from logs, stats, and planner summaries. |
 | `loupe bench` | How does it compare? Runs test workloads and makes plots. |
 | `scripts/run-canonical-workflow.sh` | How does the whole story fit? Runs build, explain, replay, advise, stats, delete, and compact. |
 
@@ -144,7 +145,7 @@ The explaining only means something because the engine under it is real:
 | M9 | gRPC API and CLI (EXPLAIN plus advisor) | ✅ done |
 | M10 | Deletes, dead-node-aware search, compaction | ✅ done |
 | M11 | Cost-based planner | 🟡 in progress |
-| M11.5 | Polish: developer experience and metrics | ⬜ |
+| M11.5 | Polish: developer experience and metrics | ✅ done |
 | M12 | (optional) Loupe Graph Explorer, 3D trace view | ⬜ |
 
 Legend: ⬜ not started · 🟡 in progress · ✅ done. Links to PRs and issues go here as work lands.
@@ -249,6 +250,18 @@ loupe stats --dir /tmp/loupe-arxiv
 This reports total, live, and deleted vectors, dead-node rate, fragmentation,
 segment count, and whether compaction is recommended.
 
+Export Prometheus text:
+
+```
+loupe metrics --log /tmp/loupe-query-log.jsonl \
+  --dir /tmp/loupe-arxiv \
+  --planner-summary-csv /tmp/loupe-replay-planners.csv \
+  --out /tmp/loupe-metrics.prom
+```
+
+The metrics include planner-choice counts, per-strategy return and recall-smoke
+rates, collection tombstone rate, deleted-vector count, and planner regret.
+
 Run the canonical workflow:
 
 ```
@@ -257,9 +270,10 @@ scripts/run-canonical-workflow.sh
 
 The script builds a small skewed workload in a temp directory, runs the hard
 filtered query through EXPLAIN, replays it with planner comparison, writes the
-retrieval-health report, creates tombstones, compacts, and reruns the health
-checks. Set `LOUPE_WORKFLOW_DIR`, `LOUPE_WORKFLOW_TOTAL`, `LOUPE_WORKFLOW_TARGET`,
-`LOUPE_WORKFLOW_QUERIES`, or `LOUPE_WORKFLOW_DELETES` to tune the run.
+retrieval-health report, exports Prometheus metrics, creates tombstones,
+compacts, and reruns the health checks. Set `LOUPE_WORKFLOW_DIR`,
+`LOUPE_WORKFLOW_TOTAL`, `LOUPE_WORKFLOW_TARGET`, `LOUPE_WORKFLOW_QUERIES`, or
+`LOUPE_WORKFLOW_DELETES` to tune the run.
 
 ## Quickstart
 

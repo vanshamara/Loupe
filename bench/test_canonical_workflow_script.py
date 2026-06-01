@@ -17,6 +17,8 @@ class CanonicalWorkflowScriptTest(unittest.TestCase):
         self.assertIn("LOUPE_WORKFLOW_DIR", text)
         self.assertIn("mktemp -d", text)
         self.assertIn("base.jsonl", text)
+        self.assertIn("metrics.prom", text)
+        self.assertIn("run_loupe metrics", text)
         self.assertNotIn("datasets/arxiv", text)
 
 

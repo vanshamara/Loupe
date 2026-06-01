@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "title": "Hard Filter Trace",
+  "query": {
+    "filter": "tenant=alpha AND doc_type=contract",
+    "k": 10,
+    "selectivity": 0.001,
+    "correlation": "anti_correlated"
+  },
+  "nodes": [
+    { "id": 0, "status": "Query", "label": "query" },
+    { "id": 101, "status": "FilteredOut", "label": "near but wrong tenant" },
+    { "id": 102, "status": "FilteredOut", "label": "near but wrong tenant" },
+    { "id": 103, "status": "FilteredOut", "label": "near but wrong doc_type" },
+    { "id": 104, "status": "FilteredOut", "label": "near but wrong tenant" },
+    { "id": 205, "status": "Visited", "label": "bridge" },
+    { "id": 206, "status": "Visited", "label": "bridge" },
+    { "id": 207, "status": "Visited", "label": "bridge" },
+    { "id": 310, "status": "Matched", "label": "matching candidate" },
+    { "id": 311, "status": "Matched", "label": "matching candidate" },
+    { "id": 312, "status": "Returned", "label": "top-k result" },
+    { "id": 313, "status": "Returned", "label": "top-k result" },
+    { "id": 410, "status": "Tombstoned", "label": "deleted node" },
+    { "id": 411, "status": "Visited", "label": "late traversal" },
+    { "id": 412, "status": "Returned", "label": "top-k result" }
+  ],
+  "edges": [
+    { "from": 0, "to": 101 },
+    { "from": 101, "to": 102 },
+    { "from": 102, "to": 103 },
+    { "from": 103, "to": 104 },
+    { "from": 104, "to": 205 },
+    { "from": 205, "to": 206 },
+    { "from": 206, "to": 207 },
+    { "from": 207, "to": 310 },
+    { "from": 310, "to": 311 },
+    { "from": 311, "to": 312 },
+    { "from": 312, "to": 313 },
+    { "from": 207, "to": 410 },
+    { "from": 410, "to": 411 },
+    { "from": 411, "to": 412 },
+    { "from": 102, "to": 205 },
+    { "from": 206, "to": 310 }
+  ],
+  "per_plan_paths": [
+    {
+      "plan": "Acorn+AdaptiveEf",
+      "ordered_events": [0, 101, 102, 205, 206, 207, 310, 311, 312, 313, 412]
+    },
+    {
+      "plan": "PostFilter+AdaptiveEf",
+      "ordered_events": [0, 101, 102, 103, 104]
+    },
+    {
+      "plan": "Flat",
+      "ordered_events": [0, 310, 311, 312, 313, 412]
+    }
+  ],
+  "truncated": false
+}

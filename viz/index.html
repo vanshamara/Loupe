@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Loupe Graph Explorer</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/three@0.183.2/build/three.module.js"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="scene-shell" aria-label="Trace graph">
+        <canvas id="trace-canvas"></canvas>
+      </section>
+      <aside class="side-panel" aria-label="Trace controls">
+        <div>
+          <p class="eyebrow">Loupe Graph Explorer</p>
+          <h1>Filtered Search Trace</h1>
+          <p class="summary" id="trace-summary">Loading sample trace...</p>
+        </div>
+
+        <label class="file-picker">
+          <span>Load trace JSON</span>
+          <input id="trace-file" type="file" accept="application/json,.json" />
+        </label>
+
+        <section>
+          <h2>Plan Overlay</h2>
+          <div class="plan-list" id="plan-list"></div>
+        </section>
+
+        <section>
+          <h2>Node Encoding</h2>
+          <div class="legend" id="legend"></div>
+        </section>
+
+        <section>
+          <h2>Selected Node</h2>
+          <pre class="node-details" id="node-details">Click a node.</pre>
+        </section>
+      </aside>
+    </main>
+
+    <script type="module" src="./src/app.js"></script>
+  </body>
+</html>

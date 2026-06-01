@@ -146,7 +146,7 @@ The explaining only means something because the engine under it is real:
 | M10 | Deletes, dead-node-aware search, compaction | ✅ done |
 | M11 | Cost-based planner | 🟡 in progress |
 | M11.5 | Polish: developer experience and metrics | ✅ done |
-| M12 | (optional) Loupe Graph Explorer, 3D trace view | ⬜ |
+| M12 | (optional) Loupe Graph Explorer, 3D trace view | ✅ done |
 
 Legend: ⬜ not started · 🟡 in progress · ✅ done. Links to PRs and issues go here as work lands.
 
@@ -274,6 +274,17 @@ retrieval-health report, exports Prometheus metrics, creates tombstones,
 compacts, and reruns the health checks. Set `LOUPE_WORKFLOW_DIR`,
 `LOUPE_WORKFLOW_TOTAL`, `LOUPE_WORKFLOW_TARGET`, `LOUPE_WORKFLOW_QUERIES`, or
 `LOUPE_WORKFLOW_DELETES` to tune the run.
+
+Open the optional Graph Explorer:
+
+```
+python -m http.server 8080 --directory viz
+```
+
+Then open `http://localhost:8080`. The viewer loads `viz/sample-trace.json` by
+default and can load another trace JSON from disk. It renders the local graph in
+3D, colors query, returned, matching, filtered-out, tombstoned, and visited nodes,
+and lets you toggle the chosen plan against counterfactual plans.
 
 ## Quickstart
 

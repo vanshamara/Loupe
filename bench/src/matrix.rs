@@ -17,7 +17,7 @@ use crate::filters::{CORRELATION_MODES, Correlation, SELECTIVITY_LEVELS, generat
 
 /// The strategies compared per cell. Flat is exact and doubles as the oracle the
 /// others are scored against.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Strategy {
     Flat,
     PostFilter,
@@ -532,7 +532,7 @@ fn strategy_name(strategy: Strategy) -> &'static str {
         Strategy::PostFilter => "PostFilter",
         Strategy::InTraversal => "InTraversal",
         Strategy::Acorn => "Acorn",
-        Strategy::AdaptiveAcorn => "AdaptiveAcorn",
+        Strategy::AdaptiveAcorn => "Acorn+AdaptiveEf",
         Strategy::Planner => "Planner",
     }
 }

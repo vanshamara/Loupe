@@ -176,11 +176,14 @@ cargo run --release -p loupe-bench --bin loupe-bench -- \
   datasets/siftsmall/siftsmall_base.fvecs \
   datasets/siftsmall/siftsmall_query.fvecs \
   datasets/siftsmall/siftsmall_groundtruth.ivecs \
-  --matrix-csv /tmp/loupe-matrix.csv
+  --matrix-csv /tmp/loupe-matrix.csv \
+  --plot-dir /tmp/loupe-plots
 ```
 
 The CSV contains one row per selectivity and correlation cell, including the
 runner, strategy chosen, recall, distance work, latency, and returned count.
+The plot directory contains Loupe-only SVGs for fixed strategies vs the planner,
+hard filter cells, where `Acorn+AdaptiveEf` wins, and where `Flat` wins.
 
 For the full million-vector set, run the download script with `sift` instead of
 `siftsmall`, then point the command at the `sift_*` files.

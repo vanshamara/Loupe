@@ -4,6 +4,7 @@ pub mod arxiv;
 pub mod compaction;
 pub mod filters;
 pub mod matrix;
+pub mod plots;
 
 use std::collections::HashSet;
 use std::fs::File;

@@ -6,6 +6,7 @@ use loupe_bench::matrix::{
     MatrixConfig, print_matrix, print_planner_summary, run_matrix, summarize_planner,
     write_matrix_csv,
 };
+use loupe_bench::plots::write_loupe_plots;
 use loupe_bench::{read_fvecs, read_ivecs, recall_at_k};
 use loupe_distance::Metric;
 use loupe_hnsw::{HnswConfig, HnswIndex, brute_force_search};
@@ -65,6 +66,13 @@ fn main() {
         write_matrix_csv(path, &cells).expect("failed to write matrix CSV");
         println!("matrix CSV: {path}");
     }
+    if let Some(dir) = &args.plot_dir {
+        let files = write_loupe_plots(dir, &cells).expect("failed to write matrix plots");
+        println!("plot: {}", files.fixed_vs_planner.display());
+        println!("plot: {}", files.hard_filter_cells.display());
+        println!("plot: {}", files.acorn_wins.display());
+        println!("plot: {}", files.flat_wins.display());
+    }
 
     println!();
     println!("=== planner vs fixed strategies (over all cells) ===");
@@ -118,11 +126,13 @@ struct BenchArgs {
     query_path: String,
     groundtruth_path: String,
     matrix_csv_path: Option<String>,
+    plot_dir: Option<String>,
 }
 
 fn parse_args() -> BenchArgs {
     let mut positional = Vec::new();
     let mut matrix_csv_path = None;
+    let mut plot_dir = None;
     let mut args = env::args().skip(1);
 
     while let Some(arg) = args.next() {
@@ -132,6 +142,12 @@ fn parse_args() -> BenchArgs {
                 std::process::exit(1);
             });
             matrix_csv_path = Some(path);
+        } else if arg == "--plot-dir" {
+            let path = args.next().unwrap_or_else(|| {
+                eprintln!("--plot-dir requires a path");
+                std::process::exit(1);
+            });
+            plot_dir = Some(path);
         } else {
             positional.push(arg);
         }
@@ -139,7 +155,7 @@ fn parse_args() -> BenchArgs {
 
     if positional.len() != 3 {
         eprintln!(
-            "usage: loupe-bench <base.fvecs> <query.fvecs> <groundtruth.ivecs> [--matrix-csv <path>]"
+            "usage: loupe-bench <base.fvecs> <query.fvecs> <groundtruth.ivecs> [--matrix-csv <path>] [--plot-dir <dir>]"
         );
         std::process::exit(1);
     }
@@ -149,6 +165,7 @@ fn parse_args() -> BenchArgs {
         query_path: positional[1].clone(),
         groundtruth_path: positional[2].clone(),
         matrix_csv_path,
+        plot_dir,
     }
 }
 

@@ -25,6 +25,7 @@ from bench.benchmark_common import (
     exact_filtered_search,
     filtered_recall,
     generate_filter,
+    limit_query_rows,
     read_fvecs,
     read_ivecs,
     write_csv,
@@ -156,6 +157,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--ef-construction", default=DEFAULT_EF_CONSTRUCTION, type=int)
     parser.add_argument("--hnsw-m", default=DEFAULT_HNSW_M, type=int)
     parser.add_argument("--seed", default=DEFAULT_SEED, type=int)
+    parser.add_argument("--query-limit", type=int)
     return parser.parse_args(argv)
 
 
@@ -173,6 +175,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if queries.shape[0] != ground_truth.shape[0]:
         raise SystemExit("query and ground-truth row counts differ")
 
+    queries, ground_truth = limit_query_rows(queries, ground_truth, args.query_limit)
     index = build_faiss_hnsw(base, args.hnsw_m, args.ef_construction)
     config = MatrixConfig(
         k=args.k,

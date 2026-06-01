@@ -24,6 +24,7 @@ from bench.benchmark_common import (
     exact_filtered_search,
     filtered_recall,
     generate_filter,
+    limit_query_rows,
     read_fvecs,
     read_ivecs,
     write_csv,
@@ -214,6 +215,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--seed", default=DEFAULT_SEED, type=int)
     parser.add_argument("--batch-size", default=DEFAULT_BATCH_SIZE, type=int)
     parser.add_argument("--timeout-secs", default=DEFAULT_TIMEOUT_SECS, type=float)
+    parser.add_argument("--query-limit", type=int)
     return parser.parse_args(argv)
 
 
@@ -231,6 +233,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if queries.shape[0] != ground_truth.shape[0]:
         raise SystemExit("query and ground-truth row counts differ")
 
+    queries, ground_truth = limit_query_rows(queries, ground_truth, args.query_limit)
     client = JsonClient(args.url, args.timeout_secs)
     client.wait_until_ready("/readyz", attempts=60, sleep_secs=1.0)
     reset_collection(

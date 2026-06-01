@@ -212,7 +212,9 @@ If your Python 3.11+ command has a different name, use that instead of
 The suite writes temporary CSVs and plots under `/tmp/loupe-benchmark-suite/`,
 starts and stops Docker services for Qdrant, Weaviate, and pgvector when those
 engines are selected, then packages the final bundle under `bench/results/`.
-Use `--engines loupe,faiss` for a no-Docker run.
+It uses the first 10 query rows by default so larger datasets finish in a
+reasonable time. Use `--query-limit 0` for every query row, and use
+`--engines loupe,faiss` for a no-Docker run.
 
 Run the first external baseline with FAISS:
 

@@ -42,6 +42,14 @@ pub fn generate_filter(
     let target = (count as f32 * selectivity).round() as usize;
     let target = target.min(count);
 
+    if target == 0 {
+        return RoaringBitmap::new();
+    }
+
+    if target >= count {
+        return (0..count as u32).collect();
+    }
+
     match mode {
         Correlation::Random => random_ids(count, target, seed),
         Correlation::Positive => nearest_ids(base, query, metric, target, false),
@@ -70,15 +78,26 @@ fn nearest_ids(
     target: usize,
     farthest: bool,
 ) -> RoaringBitmap {
+    if target == 0 {
+        return RoaringBitmap::new();
+    }
+
+    if target >= base.len() {
+        return (0..base.len() as u32).collect();
+    }
+
     let mut scored: Vec<(f32, u32)> = base
         .iter()
         .enumerate()
         .map(|(id, vector)| (metric.distance(point, vector), id as u32))
         .collect();
-    scored.sort_by(|a, b| a.0.total_cmp(&b.0));
+
     if farthest {
-        scored.reverse();
+        scored.select_nth_unstable_by(target - 1, |a, b| b.0.total_cmp(&a.0));
+    } else {
+        scored.select_nth_unstable_by(target - 1, |a, b| a.0.total_cmp(&b.0));
     }
+
     scored.into_iter().take(target).map(|(_, id)| id).collect()
 }
 

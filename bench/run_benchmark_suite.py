@@ -28,6 +28,7 @@ DEFAULT_ENGINES = (
     "loupe",
     "faiss",
 )
+DEFAULT_QUERY_LIMIT = 10
 DOCKER_SERVICES = {
     "qdrant": "qdrant",
     "weaviate": "weaviate",
@@ -60,6 +61,8 @@ class SuiteConfig:
     start_docker: bool
     keep_docker_running: bool
     dry_run: bool
+    query_limit: Optional[int]
+    loupe_full_checks: bool
     preflight: bool = True
 
 
@@ -221,7 +224,22 @@ def loupe_command(config: SuiteConfig, csv_path: Path, plot_dir: Path) -> List[s
         str(csv_path),
         "--plot-dir",
         str(plot_dir),
-    ]
+    ] + loupe_scale_flags(config)
+
+
+def loupe_scale_flags(config: SuiteConfig) -> List[str]:
+    flags = query_limit_flags(config)
+
+    if not config.loupe_full_checks:
+        flags.extend(
+            [
+                "--skip-cosine",
+                "--skip-mmap",
+                "--skip-compaction",
+            ]
+        )
+
+    return flags
 
 
 def adapter_command(config: SuiteConfig, engine: str, csv_path: Path) -> List[str]:
@@ -235,7 +253,7 @@ def adapter_command(config: SuiteConfig, engine: str, csv_path: Path) -> List[st
     if script is None:
         raise ValueError(f"no adapter script for engine: {engine}")
 
-    return [
+    command = [
         str(config.python),
         script,
         str(config.base_path),
@@ -243,6 +261,18 @@ def adapter_command(config: SuiteConfig, engine: str, csv_path: Path) -> List[st
         str(config.groundtruth_path),
         "--out",
         str(csv_path),
+    ]
+    command.extend(query_limit_flags(config))
+    return command
+
+
+def query_limit_flags(config: SuiteConfig) -> List[str]:
+    if config.query_limit is None:
+        return []
+
+    return [
+        "--query-limit",
+        str(config.query_limit),
     ]
 
 
@@ -383,14 +413,32 @@ def default_work_dir(run_id: str) -> Path:
     return Path(tempfile.gettempdir()) / "loupe-benchmark-suite" / run_id
 
 
-def default_notes(dataset_name: str, engines: Sequence[str]) -> str:
+def default_notes(
+    dataset_name: str,
+    engines: Sequence[str],
+    query_limit: Optional[int],
+) -> str:
+    query_text = "all queries"
+    if query_limit is not None:
+        query_text = f"first {query_limit} queries"
+
     if any(engine in DOCKER_SERVICES or engine == "faiss" for engine in engines):
         return (
-            f"{dataset_name} benchmark suite run; external engines use returned "
-            "candidate count as the cost proxy"
+            f"{dataset_name} benchmark suite run over {query_text}; external engines "
+            "use returned candidate count as the cost proxy"
         )
 
-    return f"{dataset_name} benchmark suite run"
+    return f"{dataset_name} benchmark suite run over {query_text}"
+
+
+def checked_query_limit(value: int) -> Optional[int]:
+    if value < 0:
+        raise ValueError("query limit must be zero or positive")
+
+    if value == 0:
+        return None
+
+    return value
 
 
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
@@ -411,6 +459,12 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--results-dir", default=Path("bench/results"), type=Path)
     parser.add_argument("--python", default=Path(sys.executable), type=Path)
     parser.add_argument(
+        "--query-limit",
+        default=DEFAULT_QUERY_LIMIT,
+        type=int,
+        help="number of query rows to run; use 0 for all rows",
+    )
+    parser.add_argument(
         "--compose-file",
         default=Path("docker/benchmark-compose.yml"),
         type=Path,
@@ -418,6 +472,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--notes")
     parser.add_argument("--no-docker-start", action="store_true")
     parser.add_argument("--keep-docker-running", action="store_true")
+    parser.add_argument("--loupe-full-checks", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args(argv)
 
@@ -425,6 +480,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
 def config_from_args(args: argparse.Namespace) -> SuiteConfig:
     engines = parse_engines(args.engines)
     run_id = package_results.checked_run_id(args.run_id)
+    query_limit = checked_query_limit(args.query_limit)
     work_dir = args.work_dir
 
     if work_dir is None:
@@ -432,7 +488,7 @@ def config_from_args(args: argparse.Namespace) -> SuiteConfig:
 
     notes = args.notes
     if notes is None:
-        notes = default_notes(args.dataset_name, engines)
+        notes = default_notes(args.dataset_name, engines, query_limit)
 
     return SuiteConfig(
         repo_root=Path(__file__).resolve().parents[1],
@@ -450,6 +506,8 @@ def config_from_args(args: argparse.Namespace) -> SuiteConfig:
         start_docker=not args.no_docker_start,
         keep_docker_running=args.keep_docker_running,
         dry_run=args.dry_run,
+        query_limit=query_limit,
+        loupe_full_checks=args.loupe_full_checks,
     )
 
 

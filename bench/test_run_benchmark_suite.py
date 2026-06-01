@@ -31,6 +31,10 @@ class RunBenchmarkSuiteTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             run_benchmark_suite.parse_engines("loupe,bad")
 
+    def test_checked_query_limit_uses_zero_for_all_queries(self):
+        self.assertIsNone(run_benchmark_suite.checked_query_limit(0))
+        self.assertEqual(10, run_benchmark_suite.checked_query_limit(10))
+
     def test_run_suite_builds_commands_and_stops_started_docker(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -69,6 +73,8 @@ class RunBenchmarkSuiteTests(unittest.TestCase):
                 start_docker=True,
                 keep_docker_running=False,
                 dry_run=False,
+                query_limit=25,
+                loupe_full_checks=False,
                 preflight=False,
             )
 
@@ -89,7 +95,12 @@ class RunBenchmarkSuiteTests(unittest.TestCase):
                 commands[0],
             )
             self.assertEqual("cargo", commands[1][0])
+            self.assertIn("--query-limit", commands[1])
+            self.assertIn("--skip-cosine", commands[1])
+            self.assertIn("--skip-mmap", commands[1])
+            self.assertIn("--skip-compaction", commands[1])
             self.assertIn("bench/qdrant_baseline.py", commands[2])
+            self.assertIn("--query-limit", commands[2])
             self.assertIn("bench/comparison_plots.py", commands[3])
             self.assertIn("bench/package_results.py", commands[4])
             self.assertEqual(
@@ -128,6 +139,8 @@ class RunBenchmarkSuiteTests(unittest.TestCase):
                 start_docker=True,
                 keep_docker_running=False,
                 dry_run=True,
+                query_limit=10,
+                loupe_full_checks=False,
                 preflight=True,
             )
 

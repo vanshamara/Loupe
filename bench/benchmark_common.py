@@ -6,7 +6,7 @@ import csv
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Sequence
+from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -129,6 +129,24 @@ def read_ivecs(path: Path) -> np.ndarray:
     return np.ascontiguousarray(records[:, 1:], dtype=np.int32)
 
 
+def limit_query_rows(
+    queries: np.ndarray,
+    ground_truth: np.ndarray,
+    query_limit: Optional[int],
+) -> Tuple[np.ndarray, np.ndarray]:
+    if query_limit is None:
+        return queries, ground_truth
+
+    if query_limit <= 0:
+        raise ValueError("query limit must be positive")
+
+    limit = min(query_limit, queries.shape[0])
+    return (
+        np.ascontiguousarray(queries[:limit]),
+        np.ascontiguousarray(ground_truth[:limit]),
+    )
+
+
 def generate_filter(
     base: np.ndarray,
     query: np.ndarray,
@@ -142,6 +160,9 @@ def generate_filter(
 
     if target == 0 or count == 0:
         return np.empty(0, dtype=np.int64)
+
+    if target >= count:
+        return np.arange(count, dtype=np.int64)
 
     if correlation == "random":
         return random_ids(count, target, seed)

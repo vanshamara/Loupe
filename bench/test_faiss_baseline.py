@@ -76,6 +76,26 @@ class FaissBaselineTests(unittest.TestCase):
 
         self.assertEqual(result, [3, 2])
 
+    def test_query_limit_trims_queries_and_ground_truth(self):
+        queries = np.array([[1.0], [2.0], [3.0]], dtype=np.float32)
+        ground_truth = np.array([[10], [20], [30]], dtype=np.int32)
+
+        limited_queries, limited_truth = benchmark_common.limit_query_rows(
+            queries,
+            ground_truth,
+            2,
+        )
+
+        np.testing.assert_allclose(limited_queries, np.array([[1.0], [2.0]]))
+        np.testing.assert_array_equal(limited_truth, np.array([[10], [20]]))
+
+    def test_query_limit_rejects_zero(self):
+        queries = np.array([[1.0]], dtype=np.float32)
+        ground_truth = np.array([[10]], dtype=np.int32)
+
+        with self.assertRaises(ValueError):
+            benchmark_common.limit_query_rows(queries, ground_truth, 0)
+
     def test_csv_writer_uses_shared_schema(self):
         row = benchmark_common.MatrixRow(
             engine="faiss",

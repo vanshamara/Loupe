@@ -69,6 +69,7 @@ class SuiteConfig:
 @dataclass(frozen=True)
 class SuiteResult:
     csv_paths: Sequence[Path]
+    planner_summary_paths: Sequence[Path]
     plot_dirs: Sequence[Path]
     package_root: Path
     summary_path: Path
@@ -88,6 +89,7 @@ def run_suite(
         config.work_dir.mkdir(parents=True, exist_ok=True)
 
     csv_paths: List[Path] = []
+    planner_summary_paths: List[Path] = []
     plot_dirs: List[Path] = []
     started_services = docker_services(config.engines) if config.start_docker else []
 
@@ -104,8 +106,10 @@ def run_suite(
 
             if engine == "loupe":
                 plot_dir = config.work_dir / "loupe-plots"
+                planner_summary_path = planner_summary_csv_path(config, engine)
+                planner_summary_paths.append(planner_summary_path)
                 plot_dirs.append(plot_dir)
-                command = loupe_command(config, csv_path, plot_dir)
+                command = loupe_command(config, csv_path, planner_summary_path, plot_dir)
             else:
                 command = adapter_command(config, engine, csv_path)
 
@@ -114,7 +118,17 @@ def run_suite(
         comparison_dir = config.work_dir / "comparison-plots"
         plot_dirs.append(comparison_dir)
         run_command(comparison_command(config, csv_paths, comparison_dir), config, executor)
-        run_command(package_command(config, checked_run_id, csv_paths, plot_dirs), config, executor)
+        run_command(
+            package_command(
+                config,
+                checked_run_id,
+                csv_paths,
+                planner_summary_paths,
+                plot_dirs,
+            ),
+            config,
+            executor,
+        )
     finally:
         if started_services and not config.keep_docker_running:
             run_command(docker_stop_command(config, started_services), config, executor)
@@ -122,6 +136,7 @@ def run_suite(
     package_root = config.results_dir / checked_run_id
     return SuiteResult(
         csv_paths=csv_paths,
+        planner_summary_paths=planner_summary_paths,
         plot_dirs=plot_dirs,
         package_root=package_root,
         summary_path=package_root / "summary.md",
@@ -207,7 +222,16 @@ def matrix_csv_path(config: SuiteConfig, engine: str) -> Path:
     return config.work_dir / f"{engine}-matrix.csv"
 
 
-def loupe_command(config: SuiteConfig, csv_path: Path, plot_dir: Path) -> List[str]:
+def planner_summary_csv_path(config: SuiteConfig, engine: str) -> Path:
+    return config.work_dir / f"{engine}-planner-summary.csv"
+
+
+def loupe_command(
+    config: SuiteConfig,
+    csv_path: Path,
+    planner_summary_path: Path,
+    plot_dir: Path,
+) -> List[str]:
     return [
         "cargo",
         "run",
@@ -222,6 +246,8 @@ def loupe_command(config: SuiteConfig, csv_path: Path, plot_dir: Path) -> List[s
         str(config.groundtruth_path),
         "--matrix-csv",
         str(csv_path),
+        "--planner-summary-csv",
+        str(planner_summary_path),
         "--plot-dir",
         str(plot_dir),
     ] + loupe_scale_flags(config)
@@ -302,6 +328,7 @@ def package_command(
     config: SuiteConfig,
     run_id: str,
     csv_paths: Sequence[Path],
+    planner_summary_paths: Sequence[Path],
     plot_dirs: Sequence[Path],
 ) -> List[str]:
     command = [
@@ -319,6 +346,9 @@ def package_command(
 
     for path in csv_paths:
         command.extend(["--csv", str(path)])
+
+    for path in planner_summary_paths:
+        command.extend(["--planner-summary-csv", str(path)])
 
     for path in plot_dirs:
         command.extend(["--plot-dir", str(path)])

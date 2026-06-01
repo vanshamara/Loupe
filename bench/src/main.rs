@@ -4,7 +4,7 @@ use std::time::Instant;
 use loupe_bench::compaction::{print_compaction_probe, run_compaction_probe};
 use loupe_bench::matrix::{
     MatrixConfig, print_matrix, print_planner_summary, run_matrix, summarize_planner,
-    write_matrix_csv,
+    write_matrix_csv, write_planner_summary_csv,
 };
 use loupe_bench::plots::write_loupe_plots;
 use loupe_bench::{read_fvecs, read_ivecs, recall_at_k};
@@ -96,6 +96,10 @@ fn main() {
         32,
     );
     print_planner_summary(&summary);
+    if let Some(path) = &args.planner_summary_csv_path {
+        write_planner_summary_csv(path, &summary).expect("failed to write planner summary CSV");
+        println!("planner summary CSV: {path}");
+    }
 
     if args.skip_mmap {
         println!();
@@ -148,6 +152,7 @@ struct BenchArgs {
     query_path: String,
     groundtruth_path: String,
     matrix_csv_path: Option<String>,
+    planner_summary_csv_path: Option<String>,
     plot_dir: Option<String>,
     query_limit: Option<usize>,
     skip_cosine: bool,
@@ -162,6 +167,7 @@ fn parse_args() -> BenchArgs {
 fn parse_args_from(args: impl IntoIterator<Item = String>) -> BenchArgs {
     let mut positional = Vec::new();
     let mut matrix_csv_path = None;
+    let mut planner_summary_csv_path = None;
     let mut plot_dir = None;
     let mut query_limit = None;
     let mut skip_cosine = false;
@@ -176,6 +182,12 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> BenchArgs {
                 std::process::exit(1);
             });
             matrix_csv_path = Some(path);
+        } else if arg == "--planner-summary-csv" {
+            let path = args.next().unwrap_or_else(|| {
+                eprintln!("--planner-summary-csv requires a path");
+                std::process::exit(1);
+            });
+            planner_summary_csv_path = Some(path);
         } else if arg == "--plot-dir" {
             let path = args.next().unwrap_or_else(|| {
                 eprintln!("--plot-dir requires a path");
@@ -201,7 +213,7 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> BenchArgs {
 
     if positional.len() != 3 {
         eprintln!(
-            "usage: loupe-bench <base.fvecs> <query.fvecs> <groundtruth.ivecs> [--matrix-csv <path>] [--plot-dir <dir>] [--query-limit <n>] [--skip-cosine] [--skip-mmap] [--skip-compaction]"
+            "usage: loupe-bench <base.fvecs> <query.fvecs> <groundtruth.ivecs> [--matrix-csv <path>] [--planner-summary-csv <path>] [--plot-dir <dir>] [--query-limit <n>] [--skip-cosine] [--skip-mmap] [--skip-compaction]"
         );
         std::process::exit(1);
     }
@@ -211,6 +223,7 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> BenchArgs {
         query_path: positional[1].clone(),
         groundtruth_path: positional[2].clone(),
         matrix_csv_path,
+        planner_summary_csv_path,
         plot_dir,
         query_limit,
         skip_cosine,
@@ -292,6 +305,8 @@ mod tests {
                 "truth.ivecs",
                 "--matrix-csv",
                 "matrix.csv",
+                "--planner-summary-csv",
+                "planner-summary.csv",
                 "--plot-dir",
                 "plots",
                 "--query-limit",
@@ -307,6 +322,10 @@ mod tests {
         assert_eq!(args.base_path, "base.fvecs");
         assert_eq!(args.query_limit, Some(25));
         assert_eq!(args.matrix_csv_path, Some("matrix.csv".to_string()));
+        assert_eq!(
+            args.planner_summary_csv_path,
+            Some("planner-summary.csv".to_string())
+        );
         assert_eq!(args.plot_dir, Some("plots".to_string()));
         assert!(args.skip_cosine);
         assert!(args.skip_mmap);

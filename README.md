@@ -186,12 +186,15 @@ cargo run --release -p loupe-bench --bin loupe-bench -- \
   datasets/siftsmall/siftsmall_query.fvecs \
   datasets/siftsmall/siftsmall_groundtruth.ivecs \
   --matrix-csv /tmp/loupe-matrix.csv \
+  --planner-summary-csv /tmp/loupe-planner-summary.csv \
   --plot-dir /tmp/loupe-plots
 ```
 
 The CSV contains one row per selectivity and correlation cell, including the
 engine, runner, strategy chosen, recall, distance work, latency, and returned
 count.
+The planner summary CSV records `RuleLadder` vs `CostModel` recall, distance
+work, regret, and regret delta for M11 calibration.
 The plot directory contains Loupe-only SVGs for fixed strategies vs the planner,
 hard filter cells, where `Acorn+AdaptiveEf` wins, and where `Flat` wins.
 
@@ -219,6 +222,7 @@ If your Python 3.11+ command has a different name, use that instead of
 The suite writes temporary CSVs and plots under `/tmp/loupe-benchmark-suite/`,
 starts and stops Docker services for Qdrant, Weaviate, and pgvector when those
 engines are selected, then packages the final bundle under `bench/results/`.
+Loupe runs also include a planner summary CSV in the result bundle.
 It uses the first 10 query rows by default so larger datasets finish in a
 reasonable time. Use `--query-limit 0` for every query row, and use
 `--engines loupe,faiss` for a no-Docker run.
@@ -295,13 +299,14 @@ python bench/package_results.py \
   --csv /tmp/qdrant-matrix.csv \
   --csv /tmp/weaviate-matrix.csv \
   --csv /tmp/pgvector-matrix.csv \
+  --planner-summary-csv /tmp/loupe-planner-summary.csv \
   --plot-dir /tmp/loupe-plots \
   --plot-dir /tmp/loupe-comparison-plots \
   --notes "siftsmall smoke run; external engines use returned candidate count as the cost proxy"
 ```
 
-The bundle lands in `bench/results/<run-id>/` with copied CSVs, copied SVGs,
-`metadata.json`, and `summary.md`.
+The bundle lands in `bench/results/<run-id>/` with copied matrix CSVs, planner
+summary CSVs, copied SVGs, `metadata.json`, and `summary.md`.
 
 The current smoke bundle is in
 `bench/results/siftsmall-smoke-2026-05-31/summary.md`. On this run, Loupe

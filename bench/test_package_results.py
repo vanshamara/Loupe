@@ -38,6 +38,39 @@ def write_csv(path, engine, runner, recall):
         )
 
 
+def write_planner_summary(path):
+    with path.open("w", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=[
+                "planner",
+                "mean_recall",
+                "mean_distance_computations",
+                "regret",
+                "regret_delta",
+            ],
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "planner": "RuleLadder",
+                "mean_recall": "0.900000",
+                "mean_distance_computations": "100.000",
+                "regret": "0.200000",
+                "regret_delta": "0.100000",
+            }
+        )
+        writer.writerow(
+            {
+                "planner": "CostModel",
+                "mean_recall": "0.950000",
+                "mean_distance_computations": "80.000",
+                "regret": "0.100000",
+                "regret_delta": "0.100000",
+            }
+        )
+
+
 class PackageResultsTests(unittest.TestCase):
     def test_rejects_unsafe_run_id(self):
         with self.assertRaises(ValueError):
@@ -53,8 +86,10 @@ class PackageResultsTests(unittest.TestCase):
             plot_dir.mkdir()
             loupe_csv = csv_dir / "loupe.csv"
             faiss_csv = csv_dir / "faiss.csv"
+            planner_summary = csv_dir / "loupe-planner-summary.csv"
             write_csv(loupe_csv, "loupe", "Planner", 0.99)
             write_csv(faiss_csv, "faiss", "FaissHnswPostFilter", 0.1)
+            write_planner_summary(planner_summary)
             (plot_dir / "recall.svg").write_text("<svg></svg>\n")
 
             packaged = package_results.package_results(
@@ -64,13 +99,20 @@ class PackageResultsTests(unittest.TestCase):
                 plot_dirs=[plot_dir],
                 out_dir=out_dir,
                 notes="test run",
+                planner_summary_paths=[planner_summary],
             )
 
             self.assertTrue((packaged.csv_dir / "loupe.csv").exists())
             self.assertTrue((packaged.csv_dir / "faiss.csv").exists())
+            self.assertTrue(
+                (packaged.planner_summary_dir / "loupe-planner-summary.csv").exists()
+            )
             self.assertTrue((packaged.plot_dir / "recall.svg").exists())
             self.assertIn("siftsmall-smoke", packaged.metadata_path.read_text())
+            self.assertIn("planner_summaries", packaged.metadata_path.read_text())
             self.assertIn("FAISS", packaged.summary_path.read_text())
+            self.assertIn("Planner Summary", packaged.summary_path.read_text())
+            self.assertIn("CostModel", packaged.summary_path.read_text())
             self.assertIn("test run", packaged.summary_path.read_text())
 
 

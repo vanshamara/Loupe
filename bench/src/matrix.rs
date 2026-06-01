@@ -250,6 +250,38 @@ pub fn matrix_csv(results: &[CellResult]) -> String {
     csv
 }
 
+/// Writes planner comparison results as CSV for M11 calibration.
+pub fn write_planner_summary_csv(path: &str, summary: &PlannerSummary) -> io::Result<()> {
+    std::fs::write(path, planner_summary_csv(summary))
+}
+
+/// Returns planner comparison results as CSV text.
+pub fn planner_summary_csv(summary: &PlannerSummary) -> String {
+    let mut csv =
+        String::from("planner,mean_recall,mean_distance_computations,regret,regret_delta\n");
+    let regret_delta = summary.rule_ladder_regret - summary.cost_model_regret;
+
+    for planner_name in ["RuleLadder", "CostModel"] {
+        if let Some(row) = summary
+            .strategies
+            .iter()
+            .find(|strategy| strategy.name == planner_name)
+        {
+            let regret = if planner_name == "RuleLadder" {
+                summary.rule_ladder_regret
+            } else {
+                summary.cost_model_regret
+            };
+            csv.push_str(&format!(
+                "{},{:.6},{:.3},{:.6},{:.6}\n",
+                row.name, row.mean_recall, row.mean_distance_computations, regret, regret_delta
+            ));
+        }
+    }
+
+    csv
+}
+
 /// One row of the real-metadata matrix: a strategy's result for a named filter.
 #[derive(Clone, Debug)]
 pub struct FilterResult {
@@ -766,6 +798,34 @@ mod tests {
             "engine,selectivity,correlation,runner,strategy_chosen,recall,distance_computations,latency_micros,returned_count\n"
         ));
         assert!(csv.contains("loupe,0.010000,anti_correlated,Planner,Acorn+AdaptiveEf"));
+    }
+
+    #[test]
+    fn planner_summary_csv_has_cost_model_rows() {
+        let summary = PlannerSummary {
+            strategies: vec![
+                StrategySummary {
+                    name: "RuleLadder".to_string(),
+                    mean_recall: 0.9,
+                    mean_distance_computations: 100.0,
+                },
+                StrategySummary {
+                    name: "CostModel".to_string(),
+                    mean_recall: 0.95,
+                    mean_distance_computations: 80.0,
+                },
+            ],
+            rule_ladder_regret: 0.2,
+            cost_model_regret: 0.1,
+        };
+
+        let csv = planner_summary_csv(&summary);
+
+        assert!(
+            csv.starts_with("planner,mean_recall,mean_distance_computations,regret,regret_delta\n")
+        );
+        assert!(csv.contains("RuleLadder,0.900000,100.000,0.200000,0.100000"));
+        assert!(csv.contains("CostModel,0.950000,80.000,0.100000,0.100000"));
     }
 
     fn metadata_setup() -> (HnswIndex, MetadataStore) {

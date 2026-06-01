@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import platform
@@ -28,7 +29,17 @@ class PackagedResults:
     metadata_path: Path
     summary_path: Path
     csv_dir: Path
+    planner_summary_dir: Path
     plot_dir: Path
+
+
+@dataclass(frozen=True)
+class PlannerSummaryRow:
+    planner: str
+    mean_recall: float
+    mean_distance_computations: float
+    regret: float
+    regret_delta: float
 
 
 def package_results(
@@ -38,15 +49,19 @@ def package_results(
     plot_dirs: Sequence[Path],
     out_dir: Path,
     notes: str,
+    planner_summary_paths: Sequence[Path] = (),
 ) -> PackagedResults:
     safe_run_id = checked_run_id(run_id)
     root = out_dir / safe_run_id
     csv_dir = root / "csv"
+    planner_summary_dir = root / "planner-summaries"
     plot_dir = root / "plots"
     csv_dir.mkdir(parents=True, exist_ok=True)
+    planner_summary_dir.mkdir(parents=True, exist_ok=True)
     plot_dir.mkdir(parents=True, exist_ok=True)
 
     copied_csvs = copy_csvs(csv_paths, csv_dir)
+    copied_planner_summaries = copy_csvs(planner_summary_paths, planner_summary_dir)
     copied_plots = copy_plots(plot_dirs, plot_dir)
     rows = comparison_plots.read_csvs(copied_csvs)
     selected = comparison_plots.comparison_rows(rows)
@@ -54,6 +69,7 @@ def package_results(
         run_id=safe_run_id,
         dataset=dataset,
         copied_csvs=copied_csvs,
+        copied_planner_summaries=copied_planner_summaries,
         copied_plots=copied_plots,
         notes=notes,
     )
@@ -61,13 +77,14 @@ def package_results(
     metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n")
 
     summary_path = root / "summary.md"
-    summary_path.write_text(summary_markdown(metadata, selected))
+    summary_path.write_text(summary_markdown(metadata, selected, copied_planner_summaries))
 
     return PackagedResults(
         root=root,
         metadata_path=metadata_path,
         summary_path=summary_path,
         csv_dir=csv_dir,
+        planner_summary_dir=planner_summary_dir,
         plot_dir=plot_dir,
     )
 
@@ -129,6 +146,7 @@ def build_metadata(
     run_id: str,
     dataset: str,
     copied_csvs: Sequence[Path],
+    copied_planner_summaries: Sequence[Path],
     copied_plots: Sequence[Path],
     notes: str,
 ) -> Dict[str, object]:
@@ -141,6 +159,10 @@ def build_metadata(
         "tool_versions": tool_versions(),
         "artifacts": {
             "csv": [str(path.relative_to(path.parents[1])) for path in copied_csvs],
+            "planner_summaries": [
+                str(path.relative_to(path.parents[1]))
+                for path in copied_planner_summaries
+            ],
             "plots": [str(path.relative_to(path.parents[1])) for path in copied_plots],
         },
     }
@@ -208,6 +230,7 @@ def command_output(command: Sequence[str]) -> Optional[str]:
 def summary_markdown(
     metadata: Dict[str, object],
     rows: Sequence[comparison_plots.BenchmarkRow],
+    planner_summary_paths: Sequence[Path] = (),
 ) -> str:
     summaries = comparison_plots.engine_summaries(rows)
     lines = [
@@ -238,12 +261,52 @@ def summary_markdown(
             f"{hard_recall:.3f} | {summary['latency_micros']:.1f} | {under_return_cells} |"
         )
 
+    planner_rows = read_planner_summaries(planner_summary_paths)
+    if planner_rows:
+        lines.extend(
+            [
+                "",
+                "## Planner Summary",
+                "",
+                "| Planner | Mean recall | Mean dist/query | Regret | Regret delta |",
+                "|---|---:|---:|---:|---:|",
+            ]
+        )
+        for row in planner_rows:
+            lines.append(
+                f"| {row.planner} | {row.mean_recall:.3f} | "
+                f"{row.mean_distance_computations:.0f} | {row.regret:.3f} | "
+                f"{row.regret_delta:.3f} |"
+            )
+
     notes = str(metadata.get("notes", "")).strip()
     if notes:
         lines.extend(["", "## Notes", "", notes])
 
     lines.append("")
     return "\n".join(lines)
+
+
+def read_planner_summaries(paths: Sequence[Path]) -> List[PlannerSummaryRow]:
+    rows = []
+
+    for path in paths:
+        with path.open(newline="") as handle:
+            reader = csv.DictReader(handle)
+            for record in reader:
+                rows.append(
+                    PlannerSummaryRow(
+                        planner=record["planner"],
+                        mean_recall=float(record["mean_recall"]),
+                        mean_distance_computations=float(
+                            record["mean_distance_computations"]
+                        ),
+                        regret=float(record["regret"]),
+                        regret_delta=float(record["regret_delta"]),
+                    )
+                )
+
+    return rows
 
 
 def group_rows(
@@ -271,6 +334,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--dataset", required=True)
     parser.add_argument("--csv", action="append", required=True, type=Path)
+    parser.add_argument("--planner-summary-csv", action="append", default=[], type=Path)
     parser.add_argument("--plot-dir", action="append", default=[], type=Path)
     parser.add_argument("--out-dir", default=DEFAULT_OUT_DIR, type=Path)
     parser.add_argument("--notes", default="")
@@ -287,6 +351,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         plot_dirs=args.plot_dir,
         out_dir=args.out_dir,
         notes=args.notes,
+        planner_summary_paths=args.planner_summary_csv,
     )
 
     print(f"result bundle: {packaged.root}")

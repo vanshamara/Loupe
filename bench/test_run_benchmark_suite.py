@@ -96,6 +96,7 @@ class RunBenchmarkSuiteTests(unittest.TestCase):
             )
             self.assertEqual("cargo", commands[1][0])
             self.assertIn("--query-limit", commands[1])
+            self.assertIn("--planner-summary-csv", commands[1])
             self.assertIn("--skip-cosine", commands[1])
             self.assertIn("--skip-mmap", commands[1])
             self.assertIn("--skip-compaction", commands[1])
@@ -103,6 +104,7 @@ class RunBenchmarkSuiteTests(unittest.TestCase):
             self.assertIn("--query-limit", commands[2])
             self.assertIn("bench/comparison_plots.py", commands[3])
             self.assertIn("bench/package_results.py", commands[4])
+            self.assertIn("--planner-summary-csv", commands[4])
             self.assertEqual(
                 [
                     "docker",
@@ -115,6 +117,10 @@ class RunBenchmarkSuiteTests(unittest.TestCase):
                 commands[5],
             )
             self.assertEqual(root / "results" / "tiny-run", result.package_root)
+            self.assertEqual(
+                [root / "work" / "loupe-planner-summary.csv"],
+                list(result.planner_summary_paths),
+            )
             self.assertEqual(root, calls[0][1])
 
     def test_dry_run_skips_executor_and_missing_inputs(self):

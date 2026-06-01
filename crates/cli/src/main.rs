@@ -59,6 +59,18 @@ enum Command {
         #[arg(long)]
         log: String,
     },
+    /// Delete a vector by id from a durable collection.
+    Delete {
+        #[arg(long)]
+        dir: String,
+        #[arg(long)]
+        id: u32,
+    },
+    /// Compact a collection, dropping deleted vectors and reclaiming their space.
+    Compact {
+        #[arg(long)]
+        dir: String,
+    },
 }
 
 #[derive(Deserialize)]
@@ -94,6 +106,8 @@ fn main() {
             k,
         } => replay(&dir, &query, &filter, &out, k),
         Command::Advise { log } => advise_log(&log),
+        Command::Delete { dir, id } => delete(&dir, id),
+        Command::Compact { dir } => compact(&dir),
     };
     if let Err(error) = result {
         eprintln!("error: {error}");
@@ -202,6 +216,34 @@ fn advise_log(log: &str) -> io::Result<()> {
             recommendation.category, recommendation.filter, recommendation.message
         );
     }
+    Ok(())
+}
+
+fn delete(dir: &str, id: u32) -> io::Result<()> {
+    let manifest: Manifest = serde_json::from_str(&std::fs::read_to_string(manifest_path(dir))?)
+        .map_err(io::Error::other)?;
+    let mut collection = Collection::open(dir, manifest.dim, manifest.metric)?;
+    if collection.delete(id) {
+        println!(
+            "deleted {id}: {} live, {} tombstoned",
+            collection.live_count(),
+            collection.deleted_count()
+        );
+    } else {
+        println!("nothing to delete for id {id} (unknown or already deleted)");
+    }
+    Ok(())
+}
+
+fn compact(dir: &str) -> io::Result<()> {
+    let manifest: Manifest = serde_json::from_str(&std::fs::read_to_string(manifest_path(dir))?)
+        .map_err(io::Error::other)?;
+    let mut collection = Collection::open(dir, manifest.dim, manifest.metric)?;
+    let removed = collection.compact()?;
+    println!(
+        "compacted: removed {removed} deleted vectors, {} remain",
+        collection.len()
+    );
     Ok(())
 }
 

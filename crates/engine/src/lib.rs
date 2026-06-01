@@ -7,12 +7,12 @@ use std::time::Instant;
 
 use loupe_distance::Metric;
 use loupe_filter::MetadataStore;
-use loupe_hnsw::HnswIndex;
+use loupe_hnsw::{FilteredStrategy, HnswIndex};
 use loupe_planner::{
     CorrelationClass, PlannerConfig, QueryShape, choose_plan, classify_correlation,
     estimate_correlation,
 };
-use loupe_storage::VectorId;
+use loupe_storage::{StorageAccessor, VectorId};
 use loupe_trace::SearchTrace;
 use loupe_wal::{SyncPolicy, WalRecord, WriteAheadLog};
 use roaring::RoaringBitmap;
@@ -21,6 +21,10 @@ pub use loupe_filter::{Expr, Value};
 pub use loupe_hnsw::Neighbor;
 pub use loupe_planner::{Plan, PlannedStrategy};
 pub use loupe_trace::{ExplainSearch, PlanReport, QueryLogRecord, QuerySummary};
+
+/// A vector paired with its metadata fields, used when rebuilding the index
+/// during compaction.
+type LiveRecord = (Vec<f32>, Vec<(String, Value)>);
 
 const STRATEGIES: [PlannedStrategy; 4] = [
     PlannedStrategy::Flat,
@@ -38,6 +42,8 @@ pub struct Collection {
     correlation_samples: usize,
     seed: u64,
     wal: Option<WriteAheadLog>,
+    dir: Option<String>,
+    fields: Vec<Vec<(String, Value)>>,
 }
 
 impl Collection {
@@ -50,6 +56,8 @@ impl Collection {
             correlation_samples: 32,
             seed: 1,
             wal: None,
+            dir: None,
+            fields: Vec::new(),
         }
     }
 
@@ -62,13 +70,20 @@ impl Collection {
         let records = WriteAheadLog::replay(&wal_path)?;
 
         let mut collection = Self::new(dim, metric);
+        collection.dir = Some(dir.to_string());
         for record in records {
-            if let WalRecord::Insert { vector, fields } = record {
-                let borrowed: Vec<(&str, Value)> = fields
-                    .iter()
-                    .map(|(k, v)| (k.as_str(), v.clone()))
-                    .collect();
-                collection.apply_insert(&vector, &borrowed);
+            match record {
+                WalRecord::Insert { vector, fields } => {
+                    let borrowed: Vec<(&str, Value)> = fields
+                        .iter()
+                        .map(|(k, v)| (k.as_str(), v.clone()))
+                        .collect();
+                    collection.apply_insert(&vector, &borrowed);
+                }
+                WalRecord::Delete { id } => {
+                    collection.index.delete(id);
+                }
+                WalRecord::CompactBegin | WalRecord::CompactEnd => {}
             }
         }
         collection.wal = Some(WriteAheadLog::open(&wal_path, SyncPolicy::PerWrite)?);
@@ -108,14 +123,111 @@ impl Collection {
     fn apply_insert(&mut self, vector: &[f32], fields: &[(&str, Value)]) -> VectorId {
         let id = self.index.insert(vector);
         self.metadata.insert(id, fields);
+        let owned: Vec<(String, Value)> = fields
+            .iter()
+            .map(|(key, value)| ((*key).to_string(), value.clone()))
+            .collect();
+        self.fields.push(owned);
         id
+    }
+
+    /// How many vectors are tombstoned: deleted but not yet compacted away.
+    pub fn deleted_count(&self) -> usize {
+        self.index.deleted_count()
+    }
+
+    /// How many vectors a search can still return.
+    pub fn live_count(&self) -> usize {
+        self.index.live_count()
+    }
+
+    /// Marks a vector deleted. It stays in the graph so search can still walk
+    /// through it, but it is never returned. With durability on, the delete is
+    /// logged before it is applied. Returns false if the id is unknown or was
+    /// already deleted.
+    pub fn delete(&mut self, id: VectorId) -> bool {
+        if (id as usize) >= self.index.len() || self.index.is_deleted(id) {
+            return false;
+        }
+        if let Some(wal) = &mut self.wal {
+            wal.append(&WalRecord::Delete { id })
+                .expect("failed to append to the write-ahead log");
+        }
+        self.index.delete(id)
+    }
+
+    /// Rewrites the index without the tombstoned vectors, reclaiming their space
+    /// and dropping the dead-node overhead from search. With durability on, it
+    /// rewrites the log so a later replay rebuilds the compacted collection. Ids
+    /// are reassigned in the process. Returns how many vectors were removed.
+    pub fn compact(&mut self) -> io::Result<usize> {
+        let removed = self.index.deleted_count();
+        if removed == 0 {
+            return Ok(0);
+        }
+
+        let dim = self.index.accessor().dim();
+        let metric = self.index.metric();
+        let mut live: Vec<LiveRecord> = Vec::with_capacity(self.index.live_count());
+        for id in 0..self.index.len() as VectorId {
+            if self.index.is_deleted(id) {
+                continue;
+            }
+            let vector = self.index.accessor().vector(id).to_vec();
+            live.push((vector, self.fields[id as usize].clone()));
+        }
+
+        if let Some(dir) = self.dir.clone() {
+            self.rewrite_log(&dir, &live)?;
+        }
+
+        let mut index = HnswIndex::new(dim, metric, loupe_hnsw::HnswConfig::default());
+        let mut metadata = MetadataStore::new();
+        let mut fields = Vec::with_capacity(live.len());
+        for (vector, record) in live {
+            let borrowed: Vec<(&str, Value)> = record
+                .iter()
+                .map(|(key, value)| (key.as_str(), value.clone()))
+                .collect();
+            let id = index.insert(&vector);
+            metadata.insert(id, &borrowed);
+            fields.push(record);
+        }
+        self.index = index;
+        self.metadata = metadata;
+        self.fields = fields;
+        Ok(removed)
+    }
+
+    /// Writes the live vectors to a fresh log and swaps it in with an atomic
+    /// rename. If a crash interrupts this, the old log is still intact and replays
+    /// the pre-compaction state, so recovery is always safe.
+    fn rewrite_log(&mut self, dir: &str, live: &[LiveRecord]) -> io::Result<()> {
+        let wal_path = format!("{dir}/wal.log");
+        let tmp_path = format!("{dir}/wal.log.compacting");
+        self.wal = None;
+        let _ = std::fs::remove_file(&tmp_path);
+
+        let mut fresh = WriteAheadLog::open(&tmp_path, SyncPolicy::Group)?;
+        for (vector, fields) in live {
+            fresh.append(&WalRecord::Insert {
+                vector: vector.clone(),
+                fields: fields.clone(),
+            })?;
+        }
+        fresh.sync()?;
+        drop(fresh);
+
+        std::fs::rename(&tmp_path, &wal_path)?;
+        self.wal = Some(WriteAheadLog::open(&wal_path, SyncPolicy::PerWrite)?);
+        Ok(())
     }
 
     /// Runs a filtered search with the strategy the planner picks.
     pub fn search(&self, query: &[f32], filter: &Expr, k: usize) -> (Vec<Neighbor>, Plan) {
         let allowed = self.metadata.evaluate(filter);
         let plan = self.plan_for(query, &allowed, k);
-        let (results, _) = self.run(plan.strategy, query, &allowed, k, plan.ef);
+        let (results, _) = self.run_plan(&plan, query, &allowed, k);
         (results, plan)
     }
 
@@ -132,7 +244,7 @@ impl Collection {
         let allowed = self.metadata.evaluate(filter);
         let plan = self.plan_for(query, &allowed, k);
         let start = Instant::now();
-        let (results, trace) = self.run(plan.strategy, query, &allowed, k, plan.ef);
+        let (results, trace) = self.run_plan(&plan, query, &allowed, k);
         let latency_micros = start.elapsed().as_micros() as u64;
         let record = QueryLogRecord {
             query_id: hash_query(query),
@@ -141,7 +253,7 @@ impl Collection {
             returned: results.iter().map(|n| n.id).collect(),
             metrics: trace,
             filter: Some(filter_label.to_string()),
-            plan: Some(strategy_name(plan.strategy).to_string()),
+            plan: Some(plan_name(&plan)),
             recall_smoke: None,
         };
         (results, record)
@@ -176,25 +288,27 @@ impl Collection {
         };
         let plan = choose_plan(&shape, &self.planner);
 
-        let (oracle, flat_trace) = self.run(PlannedStrategy::Flat, query, &allowed, k, plan.ef);
+        let flat_plan = report_plan(PlannedStrategy::Flat, &plan);
+        let (oracle, flat_trace) = self.run_plan(&flat_plan, query, &allowed, k);
         let oracle_ids: HashSet<VectorId> = oracle.iter().map(|n| n.id).collect();
 
         let mut reports = Vec::with_capacity(STRATEGIES.len());
         let mut chosen_results = Vec::new();
         let mut chosen_trace = SearchTrace::default();
         for strategy in STRATEGIES {
-            let (results, trace) = if strategy == PlannedStrategy::Flat {
+            let current_plan = report_plan(strategy, &plan);
+            let (results, trace) = if current_plan.strategy == PlannedStrategy::Flat {
                 (oracle.clone(), flat_trace.clone())
             } else {
-                self.run(strategy, query, &allowed, k, plan.ef)
+                self.run_plan(&current_plan, query, &allowed, k)
             };
-            let chosen = strategy == plan.strategy;
+            let chosen = current_plan.strategy == plan.strategy;
             if chosen {
                 chosen_results = results.clone();
                 chosen_trace = trace.clone();
             }
             reports.push(PlanReport {
-                strategy: strategy_name(strategy).to_string(),
+                strategy: plan_name(&current_plan),
                 chosen,
                 distance_computations: trace.distance_computations,
                 returned: results.len(),
@@ -211,6 +325,13 @@ impl Collection {
             .map(|(_, report)| report.clone())
             .collect();
 
+        let risk_flags = risk_flags(correlation, &reports, k);
+        let recommendations = recommendations(
+            &reports,
+            chosen_slot,
+            self.index.dead_fraction(),
+            &chosen_trace,
+        );
         let explain = ExplainSearch {
             query_summary: QuerySummary {
                 k,
@@ -221,8 +342,8 @@ impl Collection {
             chosen_plan,
             counterfactual_plans,
             trace_metrics: chosen_trace,
-            risk_flags: risk_flags(correlation, &reports, k),
-            recommendations: recommendations(&reports, chosen_slot),
+            risk_flags,
+            recommendations,
         };
         (chosen_results, explain)
     }
@@ -246,7 +367,34 @@ impl Collection {
         choose_plan(&shape, &self.planner)
     }
 
-    fn run(
+    fn run_plan(
+        &self,
+        plan: &Plan,
+        query: &[f32],
+        allowed: &RoaringBitmap,
+        k: usize,
+    ) -> (Vec<Neighbor>, SearchTrace) {
+        let adaptive_strategy = if plan.adaptive {
+            filtered_strategy(plan.strategy)
+        } else {
+            None
+        };
+
+        if let Some(strategy) = adaptive_strategy {
+            return self.index.adaptive_filtered_search(
+                query,
+                k,
+                allowed,
+                strategy,
+                plan.ef,
+                plan.max_ef,
+            );
+        }
+
+        self.run_strategy(plan.strategy, query, allowed, k, plan.ef)
+    }
+
+    fn run_strategy(
         &self,
         strategy: PlannedStrategy,
         query: &[f32],
@@ -317,7 +465,9 @@ fn risk_flags(correlation: CorrelationClass, reports: &[PlanReport], k: usize) -
     if correlation == CorrelationClass::AntiCorrelated {
         flags.push("anti_correlated_filter".to_string());
     }
-    if let Some(post) = reports.iter().find(|r| r.strategy == "PostFilter")
+    if let Some(post) = reports
+        .iter()
+        .find(|r| r.strategy.starts_with("PostFilter"))
         && post.returned < k
     {
         flags.push("post_filter_under_returns".to_string());
@@ -325,10 +475,25 @@ fn risk_flags(correlation: CorrelationClass, reports: &[PlanReport], k: usize) -
     flags
 }
 
-fn recommendations(reports: &[PlanReport], chosen_slot: usize) -> Vec<String> {
+fn recommendations(
+    reports: &[PlanReport],
+    chosen_slot: usize,
+    dead_fraction: f32,
+    chosen: &SearchTrace,
+) -> Vec<String> {
     let mut advice = Vec::new();
     if reports[chosen_slot].recall_proxy < 1.0 {
         advice.push("raise ef or use an exact scan for full recall".to_string());
+    }
+    if dead_fraction >= 0.2 {
+        let percent = (dead_fraction * 100.0).round() as u32;
+        advice.push(format!(
+            "{percent}% of vectors are deleted; run compaction to reclaim space and speed up search"
+        ));
+    } else if chosen.tombstoned_visits > 0 && chosen.tombstoned_visits * 2 >= chosen.nodes_visited {
+        advice.push(
+            "search walks through many deleted nodes; compaction would cut that work".to_string(),
+        );
     }
     advice
 }
@@ -339,6 +504,37 @@ fn strategy_name(strategy: PlannedStrategy) -> &'static str {
         PlannedStrategy::PostFilter => "PostFilter",
         PlannedStrategy::InTraversal => "InTraversal",
         PlannedStrategy::Acorn => "Acorn",
+    }
+}
+
+fn plan_name(plan: &Plan) -> String {
+    if plan.adaptive {
+        return format!("{}+AdaptiveEf", strategy_name(plan.strategy));
+    }
+
+    strategy_name(plan.strategy).to_string()
+}
+
+fn report_plan(strategy: PlannedStrategy, chosen: &Plan) -> Plan {
+    Plan {
+        strategy,
+        ef: chosen.ef,
+        max_ef: chosen.max_ef,
+        adaptive: strategy != PlannedStrategy::Flat,
+        reason: if strategy == chosen.strategy {
+            chosen.reason
+        } else {
+            "counterfactual plan"
+        },
+    }
+}
+
+fn filtered_strategy(strategy: PlannedStrategy) -> Option<FilteredStrategy> {
+    match strategy {
+        PlannedStrategy::Flat => None,
+        PlannedStrategy::PostFilter => Some(FilteredStrategy::PostFilter),
+        PlannedStrategy::InTraversal => Some(FilteredStrategy::InTraversal),
+        PlannedStrategy::Acorn => Some(FilteredStrategy::Acorn),
     }
 }
 
@@ -358,8 +554,10 @@ mod tests {
         let mut collection = Collection::new(2, Metric::L2);
         collection.set_planner(PlannerConfig {
             flat_threshold: 5,
+            strict_selectivity: 0.01,
             broad_selectivity: 0.4,
             ef: 64,
+            max_ef: 256,
             correlation_band: 0.1,
         });
         for i in 0..200u32 {
@@ -373,13 +571,13 @@ mod tests {
     }
 
     #[test]
-    fn explain_picks_in_traversal_and_flags_anti_correlation() {
+    fn explain_picks_acorn_adaptive_and_flags_anti_correlation() {
         let collection = anti_collection();
         let query = [185.0, 185.0];
         let filter = Expr::Eq("cat".into(), Value::Str("low".into()));
         let (results, explain) = collection.explain_search(&query, &filter, 10);
 
-        assert_eq!(explain.chosen_plan.strategy, "InTraversal");
+        assert_eq!(explain.chosen_plan.strategy, "Acorn+AdaptiveEf");
         assert!(
             explain
                 .risk_flags
@@ -392,9 +590,9 @@ mod tests {
         let post = explain
             .counterfactual_plans
             .iter()
-            .find(|p| p.strategy == "PostFilter")
+            .find(|p| p.strategy == "PostFilter+AdaptiveEf")
             .unwrap();
-        assert!(post.returned < 10);
+        assert_eq!(post.returned, 10);
     }
 
     #[test]
@@ -403,7 +601,7 @@ mod tests {
         let query = [150.0, 150.0];
         let filter = Expr::Eq("cat".into(), Value::Str("high".into()));
         let (_, explain) = collection.explain_search(&query, &filter, 10);
-        assert_eq!(explain.chosen_plan.strategy, "PostFilter");
+        assert_eq!(explain.chosen_plan.strategy, "PostFilter+AdaptiveEf");
     }
 
     #[test]
@@ -411,9 +609,41 @@ mod tests {
         let collection = anti_collection();
         let filter = Expr::Eq("cat".into(), Value::Str("low".into()));
         let (results, plan) = collection.search(&[185.0, 185.0], &filter, 5);
-        assert_eq!(plan.strategy, PlannedStrategy::InTraversal);
+        assert_eq!(plan.strategy, PlannedStrategy::Acorn);
+        assert!(plan.adaptive);
         for neighbor in &results {
             assert!(neighbor.id < 100);
+        }
+    }
+
+    #[test]
+    fn search_uses_adaptive_ef_for_post_filter_under_returns() {
+        let mut collection = Collection::new(2, Metric::L2);
+        collection.set_planner(PlannerConfig {
+            flat_threshold: 5,
+            strict_selectivity: 0.01,
+            broad_selectivity: 0.4,
+            ef: 10,
+            max_ef: 128,
+            correlation_band: 0.1,
+        });
+
+        for i in 0..200u32 {
+            let category = if i % 2 == 0 { "even" } else { "odd" };
+            collection.insert(
+                &[i as f32, i as f32],
+                &[("cat", Value::Str(category.into()))],
+            );
+        }
+
+        let filter = Expr::Eq("cat".into(), Value::Str("even".into()));
+        let (results, plan) = collection.search(&[80.0, 80.0], &filter, 10);
+
+        assert_eq!(plan.strategy, PlannedStrategy::PostFilter);
+        assert!(plan.adaptive);
+        assert_eq!(results.len(), 10);
+        for neighbor in &results {
+            assert_eq!(neighbor.id % 2, 0);
         }
     }
 
@@ -434,6 +664,78 @@ mod tests {
         let (results, _) = recovered.search(&[1.0, 1.0], &filter, 5);
         let ids: Vec<VectorId> = results.iter().map(|n| n.id).collect();
         assert_eq!(ids, vec![0, 2]);
+    }
+
+    #[test]
+    fn delete_excludes_from_search() {
+        let mut collection = anti_collection();
+        let filter = Expr::Eq("cat".into(), Value::Str("low".into()));
+        assert!(collection.delete(50));
+        assert!(!collection.delete(50));
+        assert_eq!(collection.deleted_count(), 1);
+        let (results, _) = collection.search(&[50.0, 50.0], &filter, 5);
+        assert!(results.iter().all(|n| n.id != 50));
+        assert!(!results.is_empty());
+    }
+
+    #[test]
+    fn compaction_drops_deleted_and_keeps_live() {
+        let mut collection = anti_collection();
+        for id in 0..40u32 {
+            assert!(collection.delete(id));
+        }
+        assert_eq!(collection.deleted_count(), 40);
+        let removed = collection.compact().unwrap();
+        assert_eq!(removed, 40);
+        assert_eq!(collection.deleted_count(), 0);
+        assert_eq!(collection.len(), 160);
+        assert_eq!(collection.live_count(), 160);
+        let filter = Expr::Eq("cat".into(), Value::Str("low".into()));
+        let (results, _) = collection.search(&[95.0, 95.0], &filter, 5);
+        assert!(!results.is_empty());
+    }
+
+    #[test]
+    fn delete_survives_recovery() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_str().unwrap();
+        {
+            let mut collection = Collection::open(path, 2, Metric::L2).unwrap();
+            collection.insert(&[1.0, 1.0], &[("cat", Value::Str("a".into()))]);
+            collection.insert(&[2.0, 2.0], &[("cat", Value::Str("a".into()))]);
+            collection.insert(&[3.0, 3.0], &[("cat", Value::Str("a".into()))]);
+            assert!(collection.delete(1));
+        }
+
+        let recovered = Collection::open(path, 2, Metric::L2).unwrap();
+        assert_eq!(recovered.deleted_count(), 1);
+        let filter = Expr::Eq("cat".into(), Value::Str("a".into()));
+        let (results, _) = recovered.search(&[2.0, 2.0], &filter, 5);
+        assert!(results.iter().all(|n| n.id != 1));
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn compaction_survives_recovery() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_str().unwrap();
+        {
+            let mut collection = Collection::open(path, 2, Metric::L2).unwrap();
+            for i in 0..10u32 {
+                collection.insert(&[i as f32, i as f32], &[("cat", Value::Str("a".into()))]);
+            }
+            collection.delete(0);
+            collection.delete(1);
+            collection.delete(2);
+            assert_eq!(collection.compact().unwrap(), 3);
+        }
+
+        let recovered = Collection::open(path, 2, Metric::L2).unwrap();
+        assert_eq!(recovered.len(), 7);
+        assert_eq!(recovered.deleted_count(), 0);
+        let filter = Expr::Eq("cat".into(), Value::Str("a".into()));
+        let (results, _) = recovered.search(&[5.0, 5.0], &filter, 3);
+        assert_eq!(results.len(), 3);
     }
 
     #[test]

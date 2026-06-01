@@ -359,13 +359,47 @@ fn run_planner(
         correlation: classify_correlation(score, planner.correlation_band),
     };
     let plan = choose_plan(&shape, planner);
-    let (results, trace) = match plan.strategy {
-        PlannedStrategy::Flat => index.flat_filtered_search(query, matrix.k, allowed),
-        PlannedStrategy::PostFilter => index.post_filter_search(query, matrix.k, allowed, plan.ef),
-        PlannedStrategy::InTraversal => {
-            index.in_traversal_filtered_search(query, matrix.k, allowed, plan.ef)
+    let (results, trace) = if plan.adaptive {
+        match plan.strategy {
+            PlannedStrategy::Flat => index.flat_filtered_search(query, matrix.k, allowed),
+            PlannedStrategy::PostFilter => index.adaptive_filtered_search(
+                query,
+                matrix.k,
+                allowed,
+                FilteredStrategy::PostFilter,
+                plan.ef,
+                plan.max_ef,
+            ),
+            PlannedStrategy::InTraversal => index.adaptive_filtered_search(
+                query,
+                matrix.k,
+                allowed,
+                FilteredStrategy::InTraversal,
+                plan.ef,
+                plan.max_ef,
+            ),
+            PlannedStrategy::Acorn => index.adaptive_filtered_search(
+                query,
+                matrix.k,
+                allowed,
+                FilteredStrategy::Acorn,
+                plan.ef,
+                plan.max_ef,
+            ),
         }
-        PlannedStrategy::Acorn => index.acorn_filtered_search(query, matrix.k, allowed, plan.ef),
+    } else {
+        match plan.strategy {
+            PlannedStrategy::Flat => index.flat_filtered_search(query, matrix.k, allowed),
+            PlannedStrategy::PostFilter => {
+                index.post_filter_search(query, matrix.k, allowed, plan.ef)
+            }
+            PlannedStrategy::InTraversal => {
+                index.in_traversal_filtered_search(query, matrix.k, allowed, plan.ef)
+            }
+            PlannedStrategy::Acorn => {
+                index.acorn_filtered_search(query, matrix.k, allowed, plan.ef)
+            }
+        }
     };
     (trace.distance_computations, overlap(&results, oracle_ids))
 }

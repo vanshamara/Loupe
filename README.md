@@ -70,7 +70,7 @@ flowchart TD
 
 | Command | What it answers |
 |---|---|
-| `loupe explain-search` | Why this result? Shows the chosen plan and the alternatives for one query. |
+| `loupe explain` | Why this result? Shows the chosen plan and the alternatives for one query. |
 | `loupe advise` | What is wrong across my workload? Reads query logs and suggests fixes. |
 | `loupe replay` | Did my change help? Replays a saved workload and reports before and after. |
 | `loupe bench` | How does it compare? Runs test workloads and makes plots. |
@@ -86,7 +86,7 @@ The explaining only means something because the engine under it is real:
 - SIMD distance. NEON on Apple Silicon, AVX on x86, with a plain version as a fallback and a check.
 - mmap storage. Search a sealed index on disk without loading all of it into memory.
 - Write-ahead log. Crash recovery you can prove by killing the process mid-write.
-- Deletes plus background compaction.
+- Deletes plus manual compaction.
 
 ---
 
@@ -104,7 +104,7 @@ The explaining only means something because the engine under it is real:
 | M7 | Disk-backed storage (mmap) | ✅ done |
 | M8 | WAL plus crash recovery | ✅ done |
 | M9 | gRPC API and CLI (EXPLAIN plus advisor) | ✅ done |
-| M10 | Deletes, dead-node-aware search, compaction | ⬜ |
+| M10 | Deletes, dead-node-aware search, compaction | 🟡 in progress |
 | M11 | Cost-based planner | ⬜ |
 | M11.5 | Polish: developer experience and metrics | ⬜ |
 | M12 | (optional) Loupe Graph Explorer, 3D trace view | ⬜ |
@@ -126,7 +126,7 @@ pgvector, across the selectivity and correlation grid (synthetic plus arXiv). Th
 headline case is 0.1% of rows passing the filter while sitting far from the
 query, where simple filtering falls apart and the planner pays off.
 
-## EXPLAIN demo
+## EXPLAIN Reference Workflow
 
 Build a durable collection from an embedded corpus, then explain a filtered query.
 Run the commands with `cargo run -p loupe-cli --bin loupe -- <args>`, or
@@ -138,23 +138,23 @@ loupe explain --dir /tmp/loupe-arxiv --query datasets/arxiv/arxiv_query.jsonl \
   --index 0 --filter "category=math.PR"
 ```
 
-That filter matches 8.5% of the papers and sits far from the query in embedding
-space (naturally anti-correlated). The planner sees that and picks Flat, and the
-counterfactual shows what the other plans would have cost:
+For a small matching set, Loupe can pick `Flat` because the exact scan is cheaper
+than graph search. For a strict anti-correlated filter above the flat-scan
+threshold, it should pick `Acorn+AdaptiveEf`. In both cases, the counterfactual
+shows what the other plans would have cost:
 
 ```
-chosen plan: Flat
+chosen plan: Acorn+AdaptiveEf
 plan            chosen   dist/query  returned recall (proxy)
-Flat               yes          145        10          1.000
-PostFilter                      658         0          0.000
-InTraversal                    1726        10          1.000
-Acorn                          1726        10          1.000
-risk flags: anti_correlated_filter, post_filter_under_returns
+Flat                         ...
+PostFilter+AdaptiveEf       ...
+InTraversal+AdaptiveEf      ...
+Acorn+AdaptiveEf    yes     ...
+risk flags: anti_correlated_filter
 ```
 
-PostFilter would have returned nothing. The traversal strategies would have cost
-twelve times more for the same answer. Flat is exact and cheapest here, and you
-can see why.
+The key point is not only which plan won. It is that Loupe shows the rejected
+plans next to the chosen one, with their cost and recall proxy.
 
 ## Quickstart
 

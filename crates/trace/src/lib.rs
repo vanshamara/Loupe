@@ -12,6 +12,7 @@ pub struct SearchTrace {
     pub distance_computations: u64,
     pub nodes_visited: u64,
     pub ef_expansions: u32,
+    pub tombstoned_visits: u64,
 }
 
 /// One line of the query log, written per query. The first fields are filled in
@@ -124,11 +125,12 @@ mod tests {
             distance_computations: 660,
             nodes_visited: 712,
             ef_expansions: 2,
+            tombstoned_visits: 5,
         };
         let json = serde_json::to_string(&metrics).unwrap();
         assert_eq!(
             json,
-            r#"{"distance_computations":660,"nodes_visited":712,"ef_expansions":2}"#
+            r#"{"distance_computations":660,"nodes_visited":712,"ef_expansions":2,"tombstoned_visits":5}"#
         );
     }
 
@@ -143,13 +145,14 @@ mod tests {
                 distance_computations: 660,
                 nodes_visited: 712,
                 ef_expansions: 0,
+                tombstoned_visits: 0,
             },
             filter: None,
             plan: None,
             recall_smoke: None,
         };
         let json = serde_json::to_string(&record).unwrap();
-        let expected = r#"{"query_id":1,"k":10,"latency_micros":1234,"returned":[5,9],"metrics":{"distance_computations":660,"nodes_visited":712,"ef_expansions":0},"filter":null,"plan":null,"recall_smoke":null}"#;
+        let expected = r#"{"query_id":1,"k":10,"latency_micros":1234,"returned":[5,9],"metrics":{"distance_computations":660,"nodes_visited":712,"ef_expansions":0,"tombstoned_visits":0},"filter":null,"plan":null,"recall_smoke":null}"#;
         assert_eq!(json, expected);
     }
 
@@ -227,6 +230,7 @@ mod tests {
                 distance_computations: 1500,
                 nodes_visited: 1800,
                 ef_expansions: 0,
+                tombstoned_visits: 0,
             },
             risk_flags: vec!["anti_correlated_filter".to_string()],
             recommendations: vec![],
@@ -236,7 +240,7 @@ mod tests {
     #[test]
     fn explain_search_json_is_stable() {
         let json = serde_json::to_string(&sample_explain()).unwrap();
-        let expected = r#"{"query_summary":{"k":10,"matching_count":200,"selectivity":0.5,"correlation":"anti_correlated"},"chosen_plan":{"strategy":"InTraversal","chosen":true,"distance_computations":1500,"returned":10,"recall_proxy":1.0},"counterfactual_plans":[{"strategy":"PostFilter","chosen":false,"distance_computations":600,"returned":5,"recall_proxy":0.5},{"strategy":"Flat","chosen":false,"distance_computations":200,"returned":10,"recall_proxy":1.0}],"trace_metrics":{"distance_computations":1500,"nodes_visited":1800,"ef_expansions":0},"risk_flags":["anti_correlated_filter"],"recommendations":[]}"#;
+        let expected = r#"{"query_summary":{"k":10,"matching_count":200,"selectivity":0.5,"correlation":"anti_correlated"},"chosen_plan":{"strategy":"InTraversal","chosen":true,"distance_computations":1500,"returned":10,"recall_proxy":1.0},"counterfactual_plans":[{"strategy":"PostFilter","chosen":false,"distance_computations":600,"returned":5,"recall_proxy":0.5},{"strategy":"Flat","chosen":false,"distance_computations":200,"returned":10,"recall_proxy":1.0}],"trace_metrics":{"distance_computations":1500,"nodes_visited":1800,"ef_expansions":0,"tombstoned_visits":0},"risk_flags":["anti_correlated_filter"],"recommendations":[]}"#;
         assert_eq!(json, expected);
     }
 

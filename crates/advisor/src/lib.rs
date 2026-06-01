@@ -83,7 +83,11 @@ fn advise_filter(filter: &str, group: &[&QueryLogRecord]) -> Vec<Recommendation>
 
     let routed = group
         .iter()
-        .filter(|log| matches!(log.plan.as_deref(), Some("InTraversal") | Some("Acorn")))
+        .filter(|log| {
+            log.plan
+                .as_deref()
+                .is_some_and(|plan| plan.starts_with("InTraversal") || plan.starts_with("Acorn"))
+        })
         .count();
     if routed * 2 > total {
         out.push(Recommendation {
@@ -131,6 +135,7 @@ mod tests {
                 distance_computations: 0,
                 nodes_visited: 0,
                 ef_expansions,
+                tombstoned_visits: 0,
             },
             filter: Some(filter.to_string()),
             plan: Some(plan.to_string()),

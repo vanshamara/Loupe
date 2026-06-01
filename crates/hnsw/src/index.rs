@@ -174,6 +174,8 @@ pub enum FilteredStrategy {
 }
 
 /// The parts of the graph that get written to and read from the graph segment.
+/// The trailing id list is the tombstone set: nodes still in the graph for
+/// connectivity but never returned by a search.
 type GraphParts = (
     Metric,
     HnswConfig,
@@ -181,6 +183,7 @@ type GraphParts = (
     Vec<usize>,
     Option<VectorId>,
     usize,
+    Vec<VectorId>,
 );
 
 /// A multi-layer HNSW index built on top of an in-memory vector store. Each node
@@ -197,6 +200,7 @@ pub struct HnswIndex {
     levels: Vec<usize>,
     entry_point: Option<VectorId>,
     max_level: usize,
+    deleted: RoaringBitmap,
 }
 
 impl HnswIndex {
@@ -214,6 +218,7 @@ impl HnswIndex {
             levels: Vec::new(),
             entry_point: None,
             max_level: 0,
+            deleted: RoaringBitmap::new(),
         }
     }
 
@@ -241,17 +246,57 @@ impl HnswIndex {
         self.metric
     }
 
+    /// Marks a vector as deleted. The node stays in the graph so search can still
+    /// walk through it for connectivity, but it is never returned. Returns false
+    /// if the id is out of range or was already deleted.
+    pub fn delete(&mut self, id: VectorId) -> bool {
+        if (id as usize) >= self.len() {
+            return false;
+        }
+        self.deleted.insert(id)
+    }
+
+    /// Whether a vector has been tombstoned.
+    pub fn is_deleted(&self, id: VectorId) -> bool {
+        self.deleted.contains(id)
+    }
+
+    /// How many vectors are tombstoned: still in the graph but not returnable.
+    pub fn deleted_count(&self) -> usize {
+        self.deleted.len() as usize
+    }
+
+    /// How many vectors a search can still return.
+    pub fn live_count(&self) -> usize {
+        self.len() - self.deleted_count()
+    }
+
+    /// The share of stored vectors that are tombstoned, used to decide when a
+    /// compaction is worth running. Zero on an empty index.
+    pub fn dead_fraction(&self) -> f32 {
+        if self.is_empty() {
+            return 0.0;
+        }
+        self.deleted_count() as f32 / self.len() as f32
+    }
+
+    fn is_live(&self, id: VectorId) -> bool {
+        !self.deleted.contains(id)
+    }
+
     /// Writes the index to a vector segment and a graph segment. The pair can be
     /// reopened with `open` and searched without loading the vectors into RAM.
     pub fn seal(&self, vector_path: &str, graph_path: &str) -> io::Result<()> {
         write_vector_segment(vector_path, &self.store)?;
-        let graph: (&Metric, &HnswConfig, _, _, _, _) = (
+        let deleted: Vec<VectorId> = self.deleted.iter().collect();
+        let graph: (&Metric, &HnswConfig, _, _, _, _, _) = (
             &self.metric,
             &self.config,
             &self.neighbors,
             &self.levels,
             &self.entry_point,
             &self.max_level,
+            &deleted,
         );
         let bytes = bincode::serialize(&graph)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
@@ -263,11 +308,12 @@ impl HnswIndex {
     pub fn open(vector_path: &str, graph_path: &str) -> io::Result<Self> {
         let store = VectorStore::Mmap(MmapVectorStore::open(vector_path)?);
         let bytes = std::fs::read(graph_path)?;
-        let (metric, config, neighbors, levels, entry_point, max_level): GraphParts =
+        let (metric, config, neighbors, levels, entry_point, max_level, deleted): GraphParts =
             bincode::deserialize(&bytes)
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
         let level_multiplier = 1.0 / (config.m as f32).ln();
         let rng = Rng::new(config.seed);
+        let deleted: RoaringBitmap = deleted.into_iter().collect();
         Ok(Self {
             store,
             metric,
@@ -278,6 +324,7 @@ impl HnswIndex {
             levels,
             entry_point,
             max_level,
+            deleted,
         })
     }
 
@@ -430,17 +477,19 @@ impl HnswIndex {
         allowed: &RoaringBitmap,
     ) -> (Vec<Neighbor>, SearchTrace) {
         let mut trace = SearchTrace::default();
-        let mut results: Vec<Neighbor> = allowed
-            .iter()
-            .map(|id| {
-                trace.distance_computations += 1;
-                trace.nodes_visited += 1;
-                Neighbor {
-                    id,
-                    distance: self.metric.distance(query, self.store.vector(id)),
-                }
-            })
-            .collect();
+        let mut results: Vec<Neighbor> = Vec::new();
+        for id in allowed.iter() {
+            if !self.is_live(id) {
+                trace.tombstoned_visits += 1;
+                continue;
+            }
+            trace.distance_computations += 1;
+            trace.nodes_visited += 1;
+            results.push(Neighbor {
+                id,
+                distance: self.metric.distance(query, self.store.vector(id)),
+            });
+        }
         results.sort_by(|a, b| a.distance.total_cmp(&b.distance));
         results.truncate(k);
         (results, trace)
@@ -565,8 +614,10 @@ impl HnswIndex {
             id: entry,
         };
         to_explore.push(Reverse(start));
-        if allowed.contains(entry) {
+        if allowed.contains(entry) && self.is_live(entry) {
             results.push(start);
+        } else if !self.is_live(entry) {
+            trace.tombstoned_visits += 1;
         }
 
         while let Some(Reverse(current)) = to_explore.pop() {
@@ -594,12 +645,15 @@ impl HnswIndex {
                 }
                 trace.nodes_visited += 1;
                 let distance = self.distance(query, node, trace);
+                if !self.is_live(node) {
+                    trace.tombstoned_visits += 1;
+                }
                 let qualifies =
                     results.len() < ef || results.peek().is_some_and(|w| distance < w.distance);
                 if qualifies {
                     let candidate = Candidate { distance, id: node };
                     to_explore.push(Reverse(candidate));
-                    if allowed.contains(node) {
+                    if allowed.contains(node) && self.is_live(node) {
                         results.push(candidate);
                         if results.len() > ef {
                             results.pop();
@@ -712,7 +766,11 @@ impl HnswIndex {
             id: entry,
         };
         to_explore.push(Reverse(start));
-        results.push(start);
+        if self.is_live(entry) {
+            results.push(start);
+        } else {
+            trace.tombstoned_visits += 1;
+        }
 
         while let Some(Reverse(current)) = to_explore.pop() {
             if let Some(worst) = results.peek()
@@ -740,9 +798,13 @@ impl HnswIndex {
                         id: neighbor,
                     };
                     to_explore.push(Reverse(candidate));
-                    results.push(candidate);
-                    if results.len() > ef {
-                        results.pop();
+                    if self.is_live(neighbor) {
+                        results.push(candidate);
+                        if results.len() > ef {
+                            results.pop();
+                        }
+                    } else {
+                        trace.tombstoned_visits += 1;
                     }
                 }
             }
@@ -1133,5 +1195,71 @@ mod tests {
         let memory_ids: Vec<VectorId> = memory.iter().map(|n| n.id).collect();
         let disk_ids: Vec<VectorId> = disk.iter().map(|n| n.id).collect();
         assert_eq!(memory_ids, disk_ids);
+    }
+
+    #[test]
+    fn delete_updates_counts() {
+        let mut index = line_index(20);
+        assert_eq!(index.live_count(), 20);
+        assert_eq!(index.deleted_count(), 0);
+        assert!(index.delete(5));
+        assert!(!index.delete(5));
+        assert!(!index.delete(999));
+        assert_eq!(index.deleted_count(), 1);
+        assert_eq!(index.live_count(), 19);
+        assert!((index.dead_fraction() - 0.05).abs() < 1e-6);
+    }
+
+    #[test]
+    fn deleted_ids_are_not_returned() {
+        let mut index = line_index(50);
+        index.delete(3);
+        let (results, _) = index.search(&[3.0, 3.0], 5);
+        assert!(results.iter().all(|n| n.id != 3));
+        assert!(!results.is_empty());
+    }
+
+    #[test]
+    fn search_counts_tombstoned_visits() {
+        let mut index = line_index(60);
+        for id in (0..60).step_by(2) {
+            index.delete(id);
+        }
+        let (_, trace) = index.search(&[25.0, 25.0], 5);
+        assert!(trace.tombstoned_visits > 0);
+    }
+
+    #[test]
+    fn filtered_search_excludes_deleted() {
+        let mut index = line_index(100);
+        let allowed = even_ids(100);
+        index.delete(40);
+        let query = [40.0, 40.0];
+        let (flat, _) = index.flat_filtered_search(&query, 5, &allowed);
+        let (in_traversal, _) = index.in_traversal_filtered_search(&query, 5, &allowed, 64);
+        let (acorn, _) = index.acorn_filtered_search(&query, 5, &allowed, 64);
+        for results in [&flat, &in_traversal, &acorn] {
+            assert!(results.iter().all(|n| n.id != 40));
+            assert!(!results.is_empty());
+        }
+    }
+
+    #[test]
+    fn sealed_index_preserves_deletes() {
+        let mut index = line_index(100);
+        index.delete(50);
+        index.delete(51);
+
+        let vectors = tempfile::NamedTempFile::new().unwrap();
+        let graph = tempfile::NamedTempFile::new().unwrap();
+        let vector_path = vectors.path().to_str().unwrap();
+        let graph_path = graph.path().to_str().unwrap();
+        index.seal(vector_path, graph_path).unwrap();
+
+        let reopened = HnswIndex::open(vector_path, graph_path).unwrap();
+        assert_eq!(reopened.deleted_count(), 2);
+        assert_eq!(reopened.live_count(), 98);
+        let (results, _) = reopened.search(&[50.0, 50.0], 5);
+        assert!(results.iter().all(|n| n.id != 50 && n.id != 51));
     }
 }

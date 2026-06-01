@@ -1,7 +1,8 @@
 //! The query planner: judge how a filter relates to the query, then pick a
 //! filtered-search strategy. The rules encode what the benchmark matrix showed:
 //! scan exactly when few ids match, search-then-drop only when the filter is broad
-//! and not anti-correlated, and filter during traversal otherwise.
+//! and not anti-correlated, and use ACORN-style bridging when the filter is strict
+//! or points away from the query.
 
 use loupe_distance::Metric;
 use loupe_storage::{StorageAccessor, VectorId};
@@ -29,15 +30,19 @@ pub enum PlannedStrategy {
 pub struct Plan {
     pub strategy: PlannedStrategy,
     pub ef: usize,
+    pub max_ef: usize,
+    pub adaptive: bool,
     pub reason: &'static str,
 }
 
-/// Thresholds the rule ladder uses. Hand-tuned for now; M9 replaces them with a
+/// Thresholds the rule ladder uses. Hand-tuned for now; M11 replaces them with a
 /// calibrated cost model.
 pub struct PlannerConfig {
     pub flat_threshold: usize,
+    pub strict_selectivity: f32,
     pub broad_selectivity: f32,
     pub ef: usize,
+    pub max_ef: usize,
     pub correlation_band: f32,
 }
 
@@ -45,8 +50,10 @@ impl Default for PlannerConfig {
     fn default() -> Self {
         Self {
             flat_threshold: 2048,
+            strict_selectivity: 0.01,
             broad_selectivity: 0.4,
             ef: 64,
+            max_ef: 512,
             correlation_band: 0.1,
         }
     }
@@ -63,35 +70,55 @@ pub struct QueryShape {
 /// Picks a filtered-search strategy from the query shape.
 pub fn choose_plan(shape: &QueryShape, config: &PlannerConfig) -> Plan {
     let ef = config.ef.max(shape.k);
+    let max_ef = config.max_ef.max(ef);
 
     if shape.matching_count <= config.flat_threshold.max(shape.k) {
         return Plan {
             strategy: PlannedStrategy::Flat,
             ef,
+            max_ef,
+            adaptive: false,
             reason: "few matches: scan them exactly",
         };
     }
 
+    let selectivity = shape.matching_count as f32 / shape.total.max(1) as f32;
+
     if shape.correlation == CorrelationClass::AntiCorrelated {
         return Plan {
-            strategy: PlannedStrategy::InTraversal,
+            strategy: PlannedStrategy::Acorn,
             ef,
-            reason: "anti-correlated filter: post-filter would miss matches",
+            max_ef,
+            adaptive: true,
+            reason: "anti-correlated filter: bridge through non-matching nodes",
         };
     }
 
-    let selectivity = shape.matching_count as f32 / shape.total.max(1) as f32;
     if selectivity >= config.broad_selectivity {
         return Plan {
             strategy: PlannedStrategy::PostFilter,
             ef,
+            max_ef,
+            adaptive: true,
             reason: "broad filter: search then drop non-matches",
+        };
+    }
+
+    if selectivity < config.strict_selectivity {
+        return Plan {
+            strategy: PlannedStrategy::Acorn,
+            ef,
+            max_ef,
+            adaptive: true,
+            reason: "strict filter: bridge through non-matching nodes",
         };
     }
 
     Plan {
         strategy: PlannedStrategy::InTraversal,
         ef,
+        max_ef,
+        adaptive: true,
         reason: "selective filter: filter during traversal",
     }
 }
@@ -185,6 +212,7 @@ mod tests {
             &PlannerConfig::default(),
         );
         assert_eq!(plan.strategy, PlannedStrategy::Flat);
+        assert!(!plan.adaptive);
     }
 
     #[test]
@@ -194,15 +222,27 @@ mod tests {
             &PlannerConfig::default(),
         );
         assert_eq!(plan.strategy, PlannedStrategy::PostFilter);
+        assert!(plan.adaptive);
     }
 
     #[test]
-    fn in_traversal_for_anti_correlated_even_when_broad() {
+    fn acorn_for_anti_correlated_even_when_broad() {
         let plan = choose_plan(
             &shape(60_000, 100_000, CorrelationClass::AntiCorrelated),
             &PlannerConfig::default(),
         );
-        assert_eq!(plan.strategy, PlannedStrategy::InTraversal);
+        assert_eq!(plan.strategy, PlannedStrategy::Acorn);
+        assert!(plan.adaptive);
+    }
+
+    #[test]
+    fn acorn_for_strict_filter() {
+        let plan = choose_plan(
+            &shape(3_000, 1_000_000, CorrelationClass::Neutral),
+            &PlannerConfig::default(),
+        );
+        assert_eq!(plan.strategy, PlannedStrategy::Acorn);
+        assert!(plan.adaptive);
     }
 
     #[test]
@@ -212,6 +252,7 @@ mod tests {
             &PlannerConfig::default(),
         );
         assert_eq!(plan.strategy, PlannedStrategy::InTraversal);
+        assert!(plan.adaptive);
     }
 
     #[test]

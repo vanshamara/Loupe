@@ -10,4 +10,8 @@ loupe-trace = { path = "../trace" }
 loupe-filter = { path = "../filter" }
 loupe-planner = { path = "../planner" }
 loupe-hnsw = { path = "../hnsw" }
+loupe-wal = { path = "../wal" }
 roaring = "0.10"
+
+[dev-dependencies]
+tempfile = "3"

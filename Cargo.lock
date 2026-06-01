@@ -360,7 +360,9 @@ dependencies = [
  "loupe-planner",
  "loupe-storage",
  "loupe-trace",
+ "loupe-wal",
  "roaring",
+ "tempfile",
 ]
 
 [[package]]

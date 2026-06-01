@@ -2,6 +2,7 @@
 //! a filtered-search strategy per query and an EXPLAIN that shows its reasoning.
 
 use std::collections::HashSet;
+use std::io;
 
 use loupe_distance::Metric;
 use loupe_filter::MetadataStore;
@@ -12,6 +13,7 @@ use loupe_planner::{
 };
 use loupe_storage::VectorId;
 use loupe_trace::{ExplainSearch, PlanReport, QuerySummary, SearchTrace};
+use loupe_wal::{SyncPolicy, WalRecord, WriteAheadLog};
 use roaring::RoaringBitmap;
 
 pub use loupe_filter::{Expr, Value};
@@ -25,17 +27,19 @@ const STRATEGIES: [PlannedStrategy; 4] = [
     PlannedStrategy::Acorn,
 ];
 
-/// A set of vectors with metadata, searched through the planner.
+/// A set of vectors with metadata, searched through the planner. With a write-ahead
+/// log it survives a crash; without one it lives only in memory.
 pub struct Collection {
     index: HnswIndex,
     metadata: MetadataStore,
     planner: PlannerConfig,
     correlation_samples: usize,
     seed: u64,
+    wal: Option<WriteAheadLog>,
 }
 
 impl Collection {
-    /// Creates an empty collection for vectors of the given length and metric.
+    /// Creates an empty in-memory collection with no durability.
     pub fn new(dim: usize, metric: Metric) -> Self {
         Self {
             index: HnswIndex::new(dim, metric, loupe_hnsw::HnswConfig::default()),
@@ -43,7 +47,30 @@ impl Collection {
             planner: PlannerConfig::default(),
             correlation_samples: 32,
             seed: 1,
+            wal: None,
         }
+    }
+
+    /// Opens a durable collection in `dir`, rebuilding it by replaying the
+    /// write-ahead log. A fresh directory yields an empty collection. Records torn
+    /// off by a crash are skipped, so no partial write corrupts the index.
+    pub fn open(dir: &str, dim: usize, metric: Metric) -> io::Result<Self> {
+        std::fs::create_dir_all(dir)?;
+        let wal_path = format!("{dir}/wal.log");
+        let records = WriteAheadLog::replay(&wal_path)?;
+
+        let mut collection = Self::new(dim, metric);
+        for record in records {
+            if let WalRecord::Insert { vector, fields } = record {
+                let borrowed: Vec<(&str, Value)> = fields
+                    .iter()
+                    .map(|(k, v)| (k.as_str(), v.clone()))
+                    .collect();
+                collection.apply_insert(&vector, &borrowed);
+            }
+        }
+        collection.wal = Some(WriteAheadLog::open(&wal_path, SyncPolicy::PerWrite)?);
+        Ok(collection)
     }
 
     pub fn len(&self) -> usize {
@@ -59,8 +86,24 @@ impl Collection {
         self.planner = planner;
     }
 
-    /// Adds a vector with its metadata and returns its id.
+    /// Adds a vector with its metadata and returns its id. With durability on, the
+    /// change is written to the log (and flushed) before it is applied.
     pub fn insert(&mut self, vector: &[f32], fields: &[(&str, Value)]) -> VectorId {
+        if let Some(wal) = &mut self.wal {
+            let record = WalRecord::Insert {
+                vector: vector.to_vec(),
+                fields: fields
+                    .iter()
+                    .map(|(key, value)| ((*key).to_string(), value.clone()))
+                    .collect(),
+            };
+            wal.append(&record)
+                .expect("failed to append to the write-ahead log");
+        }
+        self.apply_insert(vector, fields)
+    }
+
+    fn apply_insert(&mut self, vector: &[f32], fields: &[(&str, Value)]) -> VectorId {
         let id = self.index.insert(vector);
         self.metadata.insert(id, fields);
         id
@@ -306,5 +349,50 @@ mod tests {
         for neighbor in &results {
             assert!(neighbor.id < 100);
         }
+    }
+
+    #[test]
+    fn recovers_inserts_and_serves_filtered_queries() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_str().unwrap();
+        {
+            let mut collection = Collection::open(path, 2, Metric::L2).unwrap();
+            collection.insert(&[1.0, 1.0], &[("cat", Value::Str("a".into()))]);
+            collection.insert(&[2.0, 2.0], &[("cat", Value::Str("b".into()))]);
+            collection.insert(&[3.0, 3.0], &[("cat", Value::Str("a".into()))]);
+        }
+
+        let recovered = Collection::open(path, 2, Metric::L2).unwrap();
+        assert_eq!(recovered.len(), 3);
+        let filter = Expr::Eq("cat".into(), Value::Str("a".into()));
+        let (results, _) = recovered.search(&[1.0, 1.0], &filter, 5);
+        let ids: Vec<VectorId> = results.iter().map(|n| n.id).collect();
+        assert_eq!(ids, vec![0, 2]);
+    }
+
+    #[test]
+    fn recovery_ignores_a_torn_tail() {
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_str().unwrap();
+        {
+            let mut collection = Collection::open(path, 2, Metric::L2).unwrap();
+            collection.insert(&[1.0, 1.0], &[("cat", Value::Str("a".into()))]);
+            collection.insert(&[2.0, 2.0], &[("cat", Value::Str("a".into()))]);
+        }
+
+        let wal_path = format!("{path}/wal.log");
+        let mut raw = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&wal_path)
+            .unwrap();
+        raw.write_all(&999u32.to_le_bytes()).unwrap();
+        raw.write_all(&0u32.to_le_bytes()).unwrap();
+        raw.write_all(&[7u8; 5]).unwrap();
+        drop(raw);
+
+        let recovered = Collection::open(path, 2, Metric::L2).unwrap();
+        assert_eq!(recovered.len(), 2);
     }
 }

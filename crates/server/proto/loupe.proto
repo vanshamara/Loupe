@@ -1,0 +1,65 @@
+syntax = "proto3";
+package loupe;
+
+service Loupe {
+  rpc CreateCollection(CreateCollectionRequest) returns (CreateCollectionResponse);
+  rpc Upsert(UpsertRequest) returns (UpsertResponse);
+  rpc Search(SearchRequest) returns (SearchResponse);
+  rpc ExplainSearch(SearchRequest) returns (ExplainSearchResponse);
+}
+
+message CreateCollectionRequest {
+  string name = 1;
+  uint32 dim = 2;
+  string metric = 3;
+}
+message CreateCollectionResponse {}
+
+message Field {
+  string key = 1;
+  oneof value {
+    int64 int_value = 2;
+    string str_value = 3;
+  }
+}
+
+message UpsertRequest {
+  string collection = 1;
+  repeated float vector = 2;
+  repeated Field fields = 3;
+}
+message UpsertResponse {
+  uint32 id = 1;
+}
+
+message SearchRequest {
+  string collection = 1;
+  repeated float query = 2;
+  uint32 k = 3;
+  string filter = 4;
+}
+message Neighbor {
+  uint32 id = 1;
+  float distance = 2;
+}
+message SearchResponse {
+  repeated Neighbor neighbors = 1;
+}
+
+message PlanReport {
+  string strategy = 1;
+  bool chosen = 2;
+  uint64 distance_computations = 3;
+  uint64 returned = 4;
+  float recall_proxy = 5;
+}
+message ExplainSearchResponse {
+  uint32 k = 1;
+  uint64 matching_count = 2;
+  float selectivity = 3;
+  string correlation = 4;
+  PlanReport chosen_plan = 5;
+  repeated PlanReport counterfactual_plans = 6;
+  repeated string risk_flags = 7;
+  repeated string recommendations = 8;
+}

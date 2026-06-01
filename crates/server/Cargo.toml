@@ -1,0 +1,18 @@
+[package]
+name = "loupe-server"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "loupe-server"
+path = "src/main.rs"
+
+[dependencies]
+loupe-engine = { path = "../engine" }
+loupe-distance = { path = "../distance" }
+tonic = "0.12"
+prost = "0.13"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+[build-dependencies]
+tonic-build = "0.12"

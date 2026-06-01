@@ -6,7 +6,7 @@ use std::io;
 
 use clap::{Parser, Subcommand};
 use loupe_distance::Metric;
-use loupe_engine::{Collection, ExplainSearch, Expr, PlanReport, Value};
+use loupe_engine::{Collection, ExplainSearch, PlanReport, Value, parse_filter};
 use serde::{Deserialize, Serialize};
 
 #[derive(Parser)]
@@ -108,7 +108,7 @@ fn explain(dir: &str, query: &str, index: usize, filter: &str, k: usize) -> io::
         .get(index)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "query index out of range"))?
         .embedding;
-    let expr = parse_filter(filter);
+    let expr = parse_filter(filter).map_err(io::Error::other)?;
 
     let (results, report) = collection.explain_search(query_vector, &expr, k);
     println!("filter: {filter}");
@@ -118,30 +118,6 @@ fn explain(dir: &str, query: &str, index: usize, filter: &str, k: usize) -> io::
     let ids: Vec<u32> = results.iter().map(|n| n.id).collect();
     println!("returned ids: {ids:?}");
     Ok(())
-}
-
-fn parse_filter(text: &str) -> Expr {
-    if let Some((field, value)) = text.split_once(">=") {
-        let bound = value
-            .trim()
-            .parse()
-            .expect("range bound must be an integer");
-        return Expr::Range(field.trim().to_string(), bound, i64::MAX);
-    }
-    if let Some((field, value)) = text.split_once("<=") {
-        let bound = value
-            .trim()
-            .parse()
-            .expect("range bound must be an integer");
-        return Expr::Range(field.trim().to_string(), i64::MIN, bound);
-    }
-    let (field, value) = text
-        .split_once('=')
-        .expect("filter must look like field=value or field>=N");
-    Expr::Eq(
-        field.trim().to_string(),
-        Value::Str(value.trim().to_string()),
-    )
 }
 
 fn print_explain(report: &ExplainSearch) {

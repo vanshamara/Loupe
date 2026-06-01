@@ -236,6 +236,33 @@ impl Collection {
     }
 }
 
+/// Parses a simple filter string into an `Expr`. Supports `field=value` (string
+/// equals), `field>=N`, and `field<=N` (integer range). Shared by the CLI and the
+/// gRPC server.
+pub fn parse_filter(text: &str) -> Result<Expr, String> {
+    if let Some((field, value)) = text.split_once(">=") {
+        let bound: i64 = value
+            .trim()
+            .parse()
+            .map_err(|_| format!("invalid integer in {text:?}"))?;
+        return Ok(Expr::Range(field.trim().to_string(), bound, i64::MAX));
+    }
+    if let Some((field, value)) = text.split_once("<=") {
+        let bound: i64 = value
+            .trim()
+            .parse()
+            .map_err(|_| format!("invalid integer in {text:?}"))?;
+        return Ok(Expr::Range(field.trim().to_string(), i64::MIN, bound));
+    }
+    let (field, value) = text
+        .split_once('=')
+        .ok_or_else(|| format!("filter must be field=value or field>=N, got {text:?}"))?;
+    Ok(Expr::Eq(
+        field.trim().to_string(),
+        Value::Str(value.trim().to_string()),
+    ))
+}
+
 fn overlap(results: &[Neighbor], oracle_ids: &HashSet<VectorId>) -> f32 {
     if oracle_ids.is_empty() {
         return 1.0;

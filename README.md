@@ -103,7 +103,7 @@ The explaining only means something because the engine under it is real:
 | M6 | Query-log advisor | ⬜ |
 | M7 | Disk-backed storage (mmap) | ✅ done |
 | M8 | WAL plus crash recovery | ✅ done |
-| M9 | gRPC API and CLI (EXPLAIN plus advisor) | 🟡 in progress |
+| M9 | gRPC API and CLI (EXPLAIN plus advisor) | ✅ done |
 | M10 | Deletes, dead-node-aware search, compaction | ⬜ |
 | M11 | Cost-based planner | ⬜ |
 | M11.5 | Polish: developer experience and metrics | ⬜ |

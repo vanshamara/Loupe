@@ -113,7 +113,30 @@ class PackageResultsTests(unittest.TestCase):
             self.assertIn("FAISS", packaged.summary_path.read_text())
             self.assertIn("Planner Summary", packaged.summary_path.read_text())
             self.assertIn("CostModel", packaged.summary_path.read_text())
+            self.assertIn(
+                "Planner calibration: CostModel beats RuleLadder on this run.",
+                packaged.summary_path.read_text(),
+            )
             self.assertIn("test run", packaged.summary_path.read_text())
+
+    def test_planner_verdict_marks_parity_and_regression(self):
+        parity = [
+            package_results.PlannerSummaryRow("RuleLadder", 1.0, 100.0, 0.1, 0.0),
+            package_results.PlannerSummaryRow("CostModel", 1.0, 100.0, 0.1, 0.0),
+        ]
+        regression = [
+            package_results.PlannerSummaryRow("RuleLadder", 1.0, 100.0, 0.1, 0.0),
+            package_results.PlannerSummaryRow("CostModel", 0.9, 120.0, 0.2, -0.1),
+        ]
+
+        self.assertEqual(
+            "CostModel matches RuleLadder on this run.",
+            package_results.planner_verdict(parity),
+        )
+        self.assertEqual(
+            "CostModel trails RuleLadder on this run; calibration still needs work.",
+            package_results.planner_verdict(regression),
+        )
 
 
 if __name__ == "__main__":

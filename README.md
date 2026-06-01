@@ -138,7 +138,10 @@ M11 has started. The live planner now scores `Flat`, `PostFilter`,
 work is calibration against the benchmark matrix and replay logs. The benchmark
 summary and replay command now keep the old M4 rule ladder as a baseline and
 print recall, distance work, and regret for `RuleLadder` and `CostModel` side by
-side.
+side. The first M11 calibration bundle is in
+`bench/results/siftsmall-m11-calibration-2026-06-01/summary.md`; on that run,
+`CostModel` matched `RuleLadder` at 0.995 mean recall, 936 mean distance work,
+and 0.140 regret.
 
 ## EXPLAIN Reference Workflow
 

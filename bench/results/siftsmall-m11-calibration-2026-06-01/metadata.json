@@ -1,0 +1,40 @@
+{
+  "artifacts": {
+    "csv": [
+      "csv/loupe-matrix.csv"
+    ],
+    "planner_summaries": [
+      "planner-summaries/loupe-planner-summary.csv"
+    ],
+    "plots": [
+      "plots/acorn-adaptive-wins.svg",
+      "plots/fixed-vs-planner.svg",
+      "plots/flat-wins.svg",
+      "plots/hard-filter-cells.svg",
+      "plots/faiss-under-return.svg",
+      "plots/hard-filter-recall.svg",
+      "plots/latency-by-engine.svg",
+      "plots/loupe-vs-external.svg",
+      "plots/recall-by-engine.svg"
+    ]
+  },
+  "created_at_utc": "2026-06-01T19:15:40+00:00",
+  "dataset": "siftsmall",
+  "hardware": {
+    "cpu_count": 10,
+    "machine": "arm64",
+    "memory_bytes": null,
+    "processor": "arm",
+    "python_version": "3.13.5",
+    "release": "25.5.0",
+    "system": "Darwin"
+  },
+  "notes": "siftsmall benchmark suite run over first 10 queries",
+  "run_id": "siftsmall-m11-calibration-2026-06-01",
+  "tool_versions": {
+    "cargo": "cargo 1.95.0 (f2d3ce0bd 2026-03-21)",
+    "docker": "Docker version 28.3.3, build 980b856",
+    "python": "Python 3.13.5",
+    "rustc": "rustc 1.95.0 (59807616e 2026-04-14)"
+  }
+}

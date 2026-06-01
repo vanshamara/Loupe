@@ -279,6 +279,10 @@ def summary_markdown(
                 f"{row.regret_delta:.3f} |"
             )
 
+        verdict = planner_verdict(planner_rows)
+        if verdict:
+            lines.extend(["", "Planner calibration: " + verdict])
+
     notes = str(metadata.get("notes", "")).strip()
     if notes:
         lines.extend(["", "## Notes", "", notes])
@@ -307,6 +311,30 @@ def read_planner_summaries(paths: Sequence[Path]) -> List[PlannerSummaryRow]:
                 )
 
     return rows
+
+
+def planner_verdict(rows: Sequence[PlannerSummaryRow]) -> str:
+    by_name = {row.planner: row for row in rows}
+    rule = by_name.get("RuleLadder")
+    cost = by_name.get("CostModel")
+    if rule is None or cost is None:
+        return ""
+
+    recall_ok = cost.mean_recall >= rule.mean_recall
+    distance_ok = cost.mean_distance_computations <= rule.mean_distance_computations
+    regret_ok = cost.regret <= rule.regret
+    strictly_better = (
+        cost.mean_recall > rule.mean_recall
+        or cost.mean_distance_computations < rule.mean_distance_computations
+        or cost.regret < rule.regret
+    )
+
+    if recall_ok and distance_ok and regret_ok and strictly_better:
+        return "CostModel beats RuleLadder on this run."
+    if recall_ok and distance_ok and regret_ok:
+        return "CostModel matches RuleLadder on this run."
+
+    return "CostModel trails RuleLadder on this run; calibration still needs work."
 
 
 def group_rows(

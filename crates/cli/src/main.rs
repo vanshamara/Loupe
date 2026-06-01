@@ -13,6 +13,10 @@ use loupe_engine::{Collection, ExplainSearch, PlanReport, QueryLogRecord, Value,
 use loupe_planner::PlannerConfig;
 use serde::{Deserialize, Serialize};
 
+const RECALL_REGRET_GAP: f32 = 0.05;
+const SATISFIED_RECALL: f32 = 0.95;
+const MAX_RECALL_RECOVERY_WORK_MULTIPLIER: f64 = 25.0;
+
 #[derive(Parser)]
 #[command(name = "loupe", about = "Explainable filtered vector search")]
 struct Cli {
@@ -289,11 +293,11 @@ impl ReplayPlannerSummary {
 
         self.rule_ladder.observe(
             rule_ladder_report,
-            report_is_dominated(rule_ladder_report, &reports),
+            report_has_regret(rule_ladder_report, &reports),
         );
         self.cost_model.observe(
             cost_model_report,
-            report_is_dominated(cost_model_report, &reports),
+            report_has_regret(cost_model_report, &reports),
         );
         self.query_count += 1;
         Ok(())
@@ -349,13 +353,33 @@ fn find_plan_report<'a>(explain: &'a ExplainSearch, strategy: &str) -> io::Resul
         })
 }
 
-fn report_is_dominated(target: &PlanReport, reports: &[&PlanReport]) -> bool {
-    reports.iter().any(|candidate| {
-        candidate.recall_proxy >= target.recall_proxy
-            && candidate.distance_computations <= target.distance_computations
-            && (candidate.recall_proxy > target.recall_proxy
-                || candidate.distance_computations < target.distance_computations)
-    })
+fn report_has_regret(target: &PlanReport, reports: &[&PlanReport]) -> bool {
+    reports
+        .iter()
+        .any(|candidate| is_pareto_regret(target, candidate) || is_recall_regret(target, candidate))
+}
+
+fn is_pareto_regret(target: &PlanReport, candidate: &PlanReport) -> bool {
+    candidate.recall_proxy >= target.recall_proxy
+        && candidate.distance_computations <= target.distance_computations
+        && (candidate.recall_proxy > target.recall_proxy
+            || candidate.distance_computations < target.distance_computations)
+}
+
+fn is_recall_regret(target: &PlanReport, candidate: &PlanReport) -> bool {
+    if target.recall_proxy >= SATISFIED_RECALL {
+        return false;
+    }
+    if candidate.recall_proxy < SATISFIED_RECALL {
+        return false;
+    }
+    if candidate.recall_proxy < target.recall_proxy + RECALL_REGRET_GAP {
+        return false;
+    }
+
+    let target_work = target.distance_computations.max(1) as f64;
+    let candidate_work = candidate.distance_computations as f64;
+    candidate_work <= target_work * MAX_RECALL_RECOVERY_WORK_MULTIPLIER
 }
 
 fn rule_ladder_plan_name(explain: &ExplainSearch, config: &PlannerConfig) -> String {
@@ -662,6 +686,25 @@ mod tests {
 
         assert!(csv.contains("RuleLadder,1.000000,300.000,0.000000,-1.000000"));
         assert!(csv.contains("CostModel,0.500000,100.000,1.000000,-1.000000"));
+    }
+
+    #[test]
+    fn replay_summary_counts_recall_recovery_as_regret() {
+        let config = PlannerConfig::default();
+        let chosen = plan("Flat", 5_000, 1.0);
+        let reports = vec![
+            plan("PostFilter+AdaptiveEf", 250, 0.0),
+            plan("InTraversal+AdaptiveEf", 300, 0.0),
+            plan("Acorn+AdaptiveEf", 260, 0.0),
+        ];
+        let explain = explain(5_000, 0.5, "anti_correlated", chosen, reports);
+        let mut summary = ReplayPlannerSummary::default();
+
+        summary.observe(&explain, &config).unwrap();
+        let csv = replay_planner_summary_csv(&summary);
+
+        assert!(csv.contains("RuleLadder,0.000000,260.000,1.000000,1.000000"));
+        assert!(csv.contains("CostModel,1.000000,5000.000,0.000000,1.000000"));
     }
 
     #[test]

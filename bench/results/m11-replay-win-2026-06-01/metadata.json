@@ -1,0 +1,13 @@
+{
+  "run_id": "m11-replay-win-2026-06-01",
+  "dataset_name": "m11-skewed-replay",
+  "engines": ["loupe"],
+  "artifact_paths": [
+    "bench/results/m11-replay-win-2026-06-01/planner-summaries/loupe-replay-planner-summary.csv"
+  ],
+  "notes": [
+    "Replay used a saved skewed workload where category=target has 5000 matches and prior recall_smoke rows show high miss rate.",
+    "CostModel uses feedback history and chooses Flat.",
+    "RuleLadder uses the M4 baseline rule and chooses Acorn+AdaptiveEf."
+  ]
+}

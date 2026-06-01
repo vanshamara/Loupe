@@ -162,6 +162,11 @@ fn flat_work(shape: &QueryShape, config: &PlannerConfig) -> f32 {
     if shape.matching_count <= config.flat_threshold.max(shape.k) {
         return work * 0.25;
     }
+    if shape.historical_miss_rate >= 0.5
+        && shape.matching_count <= config.flat_threshold.max(shape.k) * 4
+    {
+        return work * 0.25;
+    }
     work * 10.0
 }
 
@@ -441,6 +446,17 @@ mod tests {
 
         assert_ne!(plan.strategy, PlannedStrategy::PostFilter);
         assert!(plan.adaptive);
+    }
+
+    #[test]
+    fn historical_misses_can_pick_exact_scan_above_flat_threshold() {
+        let mut query = shape(5_000, 100_000, CorrelationClass::AntiCorrelated);
+        query.historical_miss_rate = 0.8;
+
+        let plan = choose_plan(&query, &PlannerConfig::default());
+
+        assert_eq!(plan.strategy, PlannedStrategy::Flat);
+        assert!(!plan.adaptive);
     }
 
     #[test]

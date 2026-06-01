@@ -141,7 +141,10 @@ print recall, distance work, and regret for `RuleLadder` and `CostModel` side by
 side. The first M11 calibration bundle is in
 `bench/results/siftsmall-m11-calibration-2026-06-01/summary.md`; on that run,
 `CostModel` matched `RuleLadder` at 0.995 mean recall, 936 mean distance work,
-and 0.140 regret.
+and 0.140 regret. The replay win proof is in
+`bench/results/m11-replay-win-2026-06-01/summary.md`; on that skewed workload,
+`CostModel` improved mean recall from 0.000 to 1.000 and reduced regret from
+1.000 to 0.000.
 
 ## EXPLAIN Reference Workflow
 

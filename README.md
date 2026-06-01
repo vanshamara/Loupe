@@ -188,10 +188,36 @@ count.
 The plot directory contains Loupe-only SVGs for fixed strategies vs the planner,
 hard filter cells, where `Acorn+AdaptiveEf` wins, and where `Flat` wins.
 
+Run the one-command benchmark suite when you want a packaged result bundle. The
+runner uses the active Python interpreter for the external adapters. Use Python
+3.11 or newer, and install the FAISS and competitor requirements in your venv
+first when you pass `--engines all`.
+
+```
+python3.14 -m venv .venv
+. .venv/bin/activate
+python -m pip install -r scripts/requirements-faiss.txt -r scripts/requirements-competitors.txt
+python bench/run_benchmark_suite.py \
+  --dataset-name siftsmall \
+  --base datasets/siftsmall/siftsmall_base.fvecs \
+  --query datasets/siftsmall/siftsmall_query.fvecs \
+  --groundtruth datasets/siftsmall/siftsmall_groundtruth.ivecs \
+  --run-id siftsmall-smoke-2026-05-31 \
+  --engines all
+```
+
+If your Python 3.11+ command has a different name, use that instead of
+`python3.14`.
+
+The suite writes temporary CSVs and plots under `/tmp/loupe-benchmark-suite/`,
+starts and stops Docker services for Qdrant, Weaviate, and pgvector when those
+engines are selected, then packages the final bundle under `bench/results/`.
+Use `--engines loupe,faiss` for a no-Docker run.
+
 Run the first external baseline with FAISS:
 
 ```
-python3.11 -m venv .venv
+python3.14 -m venv .venv
 . .venv/bin/activate
 python -m pip install -r scripts/requirements-faiss.txt
 python bench/faiss_baseline.py \
@@ -209,7 +235,7 @@ Run the Docker-backed baselines:
 
 ```
 docker compose -f docker/benchmark-compose.yml up -d qdrant weaviate pgvector
-python3.11 -m venv .venv
+python3.14 -m venv .venv
 . .venv/bin/activate
 python -m pip install -r scripts/requirements-competitors.txt
 python bench/qdrant_baseline.py \

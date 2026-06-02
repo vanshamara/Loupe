@@ -209,12 +209,17 @@ work is calibration against the benchmark matrix and replay logs. The benchmark
 summary and replay command now keep the old M4 rule ladder as a baseline and
 print recall, distance work, and regret for `RuleLadder` and `CostModel` side by
 side. The first M11 calibration bundle is in
-`bench/results/siftsmall-m11-calibration-2026-06-01/summary.md`; on that run,
-`CostModel` matched `RuleLadder` at 0.995 mean recall, 936 mean distance work,
-and 0.140 regret. The replay win proof is in
+`bench/results/siftsmall-m11-calibration-2026-06-01/summary.md`; on that older
+run, `CostModel` matched `RuleLadder` at 0.995 mean recall, 936 mean distance
+work, and 0.140 regret. After tuning, the packaged calibration proof is in
+`bench/results/siftsmall-m11-costmodel-win-2026-06-02/summary.md`; on that
+10-query siftsmall matrix, `CostModel` improved mean recall from 0.995 to 1.000,
+reduced mean distance work from 936 to 859, and reduced regret from 0.140 to
+0.060. The replay win proof is in
 `bench/results/m11-replay-win-2026-06-01/summary.md`; on that skewed workload,
 `CostModel` improved mean recall from 0.000 to 1.000 and reduced regret from
-1.000 to 0.000.
+1.000 to 0.000. The remaining M11 work is to rerun the SIFT1M benchmark after
+the planner and exact-scan speedups.
 
 ## EXPLAIN Reference Workflow
 
@@ -296,7 +301,7 @@ rates, collection tombstone rate, deleted-vector count, and planner regret.
 Run the canonical workflow:
 
 ```
-scripts/run-canonical-workflow.sh
+LOUPE_WORKFLOW_DIR=/tmp/loupe-workflow scripts/run-canonical-workflow.sh
 ```
 
 The script builds a small skewed workload in a temp directory, runs the hard
@@ -319,13 +324,67 @@ and lets you toggle the chosen plan against counterfactual plans.
 
 ## Quickstart
 
-Build and run the tests:
+### Build
 
 ```
-cargo test
+cargo build --all
+cargo test --all
 ```
 
-Run the recall check on the small SIFT set:
+### CLI quickstart
+
+The fastest end-to-end CLI check does not need downloaded datasets. It creates a
+small skewed workload in a temp directory, builds a collection, runs
+`loupe explain`, replays the workload, writes an advisor report, exports metrics,
+deletes rows, compacts, and checks stats.
+
+```
+LOUPE_WORKFLOW_DIR=/tmp/loupe-workflow scripts/run-canonical-workflow.sh
+```
+
+The script prints the temp directory and the files it wrote. The most useful ones
+are:
+
+- `explain-before.txt`
+- `planner-summary.csv`
+- `retrieval-health.md`
+- `metrics.prom`
+- `stats-after-compact.txt`
+
+To run the CLI manually after installing it:
+
+```
+cargo install --path crates/cli
+loupe build --base /tmp/loupe-workflow/base.jsonl --dir /tmp/loupe-manual-demo
+loupe explain --dir /tmp/loupe-manual-demo --query /tmp/loupe-workflow/query.jsonl \
+  --index 0 --filter "category=target"
+```
+
+Use the files from `scripts/run-canonical-workflow.sh` for the manual commands,
+or point `LOUPE_WORKFLOW_DIR` at another directory you choose.
+
+### Server quickstart
+
+Start the local gRPC server:
+
+```
+cargo run -p loupe-server --bin loupe-server
+```
+
+It listens on `127.0.0.1:50051`. The server supports create collection, upsert,
+search, and explain-search. If you only want a local smoke test without installing
+a gRPC client, run:
+
+```
+cargo test -p loupe-server --test grpc
+```
+
+That test creates a collection, upserts vectors, searches with a filter, and runs
+EXPLAIN through the service layer.
+
+### Benchmark quickstart
+
+Run the recall and filtered-search matrix check on the small SIFT set:
 
 ```
 bash scripts/download-datasets.sh siftsmall
@@ -345,6 +404,8 @@ The planner summary CSV records `RuleLadder` vs `CostModel` recall, distance
 work, regret, and regret delta for M11 calibration.
 The plot directory contains Loupe-only SVGs for fixed strategies vs the planner,
 hard filter cells, where `Acorn+AdaptiveEf` wins, and where `Flat` wins.
+
+### Packaged benchmark suite
 
 Run the one-command benchmark suite when you want a packaged result bundle. The
 runner uses the active Python interpreter for the external adapters. Use Python

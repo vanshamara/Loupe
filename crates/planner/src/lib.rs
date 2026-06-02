@@ -92,6 +92,7 @@ pub struct StrategyEstimate {
     pub strategy: PlannedStrategy,
     pub expected_work: f32,
     pub recall_miss_risk: f32,
+    pub risk_cost: f32,
     pub total_cost: f32,
 }
 
@@ -113,6 +114,7 @@ pub fn estimate_strategy_costs(
     };
 
     let post_work = post_filter_work(shape, selectivity, candidate_count);
+    let post_risk_cost = post_filter_risk_cost(shape, selectivity, post_work);
     let post_risk = post_filter_risk(selectivity, shape.correlation, history, config);
 
     let in_traversal_work = in_traversal_work(shape, selectivity, candidate_count);
@@ -122,15 +124,22 @@ pub fn estimate_strategy_costs(
     let acorn_risk = acorn_risk(selectivity, shape.correlation, history, config);
 
     vec![
-        estimate(PlannedStrategy::Flat, flat_work, flat_risk, config),
-        estimate(PlannedStrategy::PostFilter, post_work, post_risk, config),
+        estimate(PlannedStrategy::Flat, flat_work, flat_risk, 0.0, config),
+        estimate(
+            PlannedStrategy::PostFilter,
+            post_work,
+            post_risk,
+            post_risk_cost,
+            config,
+        ),
         estimate(
             PlannedStrategy::InTraversal,
             in_traversal_work,
             in_traversal_risk,
+            0.0,
             config,
         ),
-        estimate(PlannedStrategy::Acorn, acorn_work, acorn_risk, config),
+        estimate(PlannedStrategy::Acorn, acorn_work, acorn_risk, 0.0, config),
     ]
 }
 
@@ -174,22 +183,28 @@ fn estimate(
     strategy: PlannedStrategy,
     expected_work: f32,
     recall_miss_risk: f32,
+    risk_cost: f32,
     config: &PlannerConfig,
 ) -> StrategyEstimate {
     StrategyEstimate {
         strategy,
         expected_work,
         recall_miss_risk,
-        total_cost: expected_work + recall_miss_risk * config.recall_miss_penalty,
+        risk_cost,
+        total_cost: expected_work + risk_cost + recall_miss_risk * config.recall_miss_penalty,
     }
 }
 
 fn post_filter_work(shape: &QueryShape, selectivity: f32, candidate_count: f32) -> f32 {
+    (candidate_count / selectivity.max(0.001)).min(shape.total.max(1) as f32)
+}
+
+fn post_filter_risk_cost(shape: &QueryShape, selectivity: f32, expected_work: f32) -> f32 {
     if shape.correlation == CorrelationClass::AntiCorrelated && selectivity < 0.95 {
-        return shape.total.max(1) as f32;
+        return (shape.total.max(1) as f32 - expected_work).max(0.0);
     }
 
-    (candidate_count / selectivity.max(0.001)).min(shape.total.max(1) as f32)
+    0.0
 }
 
 fn post_filter_risk(
@@ -481,6 +496,22 @@ mod tests {
         assert!(estimates.iter().any(|estimate| {
             estimate.strategy == PlannedStrategy::PostFilter && estimate.total_cost < 1_000.0
         }));
+    }
+
+    #[test]
+    fn post_filter_anti_correlation_cost_keeps_work_estimate_clean() {
+        let estimates = estimate_strategy_costs(
+            &shape(60_000, 100_000, CorrelationClass::AntiCorrelated),
+            &PlannerConfig::default(),
+        );
+        let post = estimates
+            .iter()
+            .find(|estimate| estimate.strategy == PlannedStrategy::PostFilter)
+            .unwrap();
+
+        assert!(post.expected_work < 200.0);
+        assert!(post.risk_cost > 99_000.0);
+        assert!(post.total_cost > 100_000.0);
     }
 
     #[test]

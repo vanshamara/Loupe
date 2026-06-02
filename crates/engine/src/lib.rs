@@ -29,6 +29,7 @@ type LiveRecord = (Vec<f32>, Vec<(String, Value)>);
 const LOGICAL_SEGMENT_ID: u32 = 0;
 const DEFAULT_AUTO_COMPACTION_DEAD_FRACTION: f32 = 0.30;
 const DEFAULT_AUTO_COMPACTION_MIN_DELETED: usize = 10_000;
+const EXACT_FALLBACK_FLAT_MULTIPLIER: usize = 8;
 
 const STRATEGIES: [PlannedStrategy; 4] = [
     PlannedStrategy::Flat,
@@ -502,7 +503,7 @@ impl Collection {
         };
 
         if let Some(strategy) = adaptive_strategy {
-            return self.index.adaptive_filtered_search(
+            let (results, mut trace) = self.index.adaptive_filtered_search(
                 query,
                 k,
                 allowed,
@@ -510,6 +511,12 @@ impl Collection {
                 plan.ef,
                 plan.max_ef,
             );
+            if should_run_exact_fallback(results.len(), k, allowed, self.planner.flat_threshold) {
+                let (fallback, fallback_trace) = self.index.flat_filtered_search(query, k, allowed);
+                add_trace(&mut trace, &fallback_trace);
+                return (fallback, trace);
+            }
+            return (results, trace);
         }
 
         self.run_strategy(plan.strategy, query, allowed, k, plan.ef)
@@ -532,6 +539,33 @@ impl Collection {
             PlannedStrategy::Acorn => self.index.acorn_filtered_search(query, k, allowed, ef),
         }
     }
+}
+
+fn should_run_exact_fallback(
+    returned_count: usize,
+    k: usize,
+    allowed: &RoaringBitmap,
+    flat_threshold: usize,
+) -> bool {
+    if returned_count >= k || allowed.is_empty() {
+        return false;
+    }
+
+    let exact_limit = flat_threshold
+        .max(k)
+        .saturating_mul(EXACT_FALLBACK_FLAT_MULTIPLIER);
+    bitmap_len(allowed) <= exact_limit
+}
+
+fn add_trace(total: &mut SearchTrace, extra: &SearchTrace) {
+    total.distance_computations += extra.distance_computations;
+    total.nodes_visited += extra.nodes_visited;
+    total.ef_expansions += extra.ef_expansions;
+    total.tombstoned_visits += extra.tombstoned_visits;
+}
+
+fn bitmap_len(bitmap: &RoaringBitmap) -> usize {
+    bitmap.len().try_into().unwrap_or(usize::MAX)
 }
 
 /// Parses a simple filter string into an `Expr`. Supports `field=value` (string
@@ -785,6 +819,45 @@ mod tests {
         assert_eq!(results.len(), 10);
         for neighbor in &results {
             assert_eq!(neighbor.id % 2, 0);
+        }
+    }
+
+    #[test]
+    fn adaptive_under_return_uses_exact_fallback_for_small_filter() {
+        let mut collection = Collection::new(2, Metric::L2);
+        collection.set_planner(PlannerConfig {
+            flat_threshold: 20,
+            strict_selectivity: 0.01,
+            broad_selectivity: 0.4,
+            ef: 10,
+            max_ef: 10,
+            correlation_band: 0.1,
+            ..PlannerConfig::default()
+        });
+        for i in 0..200u32 {
+            let category = if i < 100 { "low" } else { "high" };
+            collection.insert(
+                &[i as f32, i as f32],
+                &[("cat", Value::Str(category.into()))],
+            );
+        }
+        let allowed = collection
+            .metadata
+            .evaluate(&Expr::Eq("cat".into(), Value::Str("low".into())));
+        let plan = Plan {
+            strategy: PlannedStrategy::PostFilter,
+            ef: 10,
+            max_ef: 10,
+            adaptive: true,
+            reason: "test plan",
+        };
+
+        let (results, trace) = collection.run_plan(&plan, &[185.0, 185.0], &allowed, 10);
+
+        assert_eq!(results.len(), 10);
+        assert!(trace.distance_computations > 100);
+        for neighbor in &results {
+            assert!(neighbor.id < 100);
         }
     }
 

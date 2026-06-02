@@ -712,7 +712,7 @@ fn run_rule_ladder_strategy(
     let mut shape = QueryShape::new(index.len(), allowed.len() as usize, matrix.k, correlation);
     shape.candidate_count = matrix.ef.max(matrix.k);
     let plan = choose_rule_ladder_plan(&shape, planner);
-    run_plan(index, query, allowed, matrix, &plan)
+    run_plan(index, query, allowed, matrix, planner, &plan)
 }
 
 fn run_planner_strategy(
@@ -735,7 +735,7 @@ fn run_planner_strategy(
     let mut shape = QueryShape::new(index.len(), allowed.len() as usize, matrix.k, correlation);
     shape.candidate_count = matrix.ef.max(matrix.k);
     let plan = choose_plan(&shape, planner);
-    run_plan(index, query, allowed, matrix, &plan)
+    run_plan(index, query, allowed, matrix, planner, &plan)
 }
 
 fn run_plan(
@@ -743,6 +743,7 @@ fn run_plan(
     query: &[f32],
     allowed: &roaring::RoaringBitmap,
     matrix: &MatrixConfig,
+    planner: &PlannerConfig,
     plan: &Plan,
 ) -> StrategyOutcome {
     let start = Instant::now();
@@ -788,12 +789,47 @@ fn run_plan(
             }
         }
     };
+    let (results, trace) = if plan.adaptive {
+        maybe_run_exact_fallback(index, query, allowed, matrix.k, planner, results, trace)
+    } else {
+        (results, trace)
+    };
     StrategyOutcome {
         results,
         trace,
         latency_micros: start.elapsed().as_micros() as f64,
         strategy_chosen: plan_name(plan),
     }
+}
+
+fn maybe_run_exact_fallback(
+    index: &HnswIndex,
+    query: &[f32],
+    allowed: &roaring::RoaringBitmap,
+    k: usize,
+    planner: &PlannerConfig,
+    results: Vec<Neighbor>,
+    mut trace: SearchTrace,
+) -> (Vec<Neighbor>, SearchTrace) {
+    if results.len() >= k || allowed.is_empty() {
+        return (results, trace);
+    }
+
+    let exact_limit = planner.flat_threshold.max(k).saturating_mul(8);
+    if bitmap_len(allowed) > exact_limit {
+        return (results, trace);
+    }
+
+    let (fallback, fallback_trace) = index.flat_filtered_search(query, k, allowed);
+    trace.distance_computations += fallback_trace.distance_computations;
+    trace.nodes_visited += fallback_trace.nodes_visited;
+    trace.ef_expansions += fallback_trace.ef_expansions;
+    trace.tombstoned_visits += fallback_trace.tombstoned_visits;
+    (fallback, trace)
+}
+
+fn bitmap_len(bitmap: &roaring::RoaringBitmap) -> usize {
+    bitmap.len().try_into().unwrap_or(usize::MAX)
 }
 
 fn choose_rule_ladder_plan(shape: &QueryShape, config: &PlannerConfig) -> Plan {
@@ -993,6 +1029,43 @@ mod tests {
         assert_eq!(csv.lines().count(), results.len() + 1);
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn exact_fallback_fills_short_adaptive_planner_results() {
+        let (index, _base, _queries) = small_setup();
+        let mut allowed = roaring::RoaringBitmap::new();
+        for id in 0..100u32 {
+            allowed.insert(id);
+        }
+        let partial = vec![Neighbor {
+            id: 50,
+            distance: 0.0,
+        }];
+        let trace = SearchTrace {
+            distance_computations: 10,
+            nodes_visited: 10,
+            ef_expansions: 0,
+            tombstoned_visits: 0,
+        };
+        let planner = PlannerConfig {
+            flat_threshold: 20,
+            ..Default::default()
+        };
+
+        let (results, trace) = maybe_run_exact_fallback(
+            &index,
+            &[150.0, 150.0],
+            &allowed,
+            5,
+            &planner,
+            partial,
+            trace,
+        );
+
+        assert_eq!(results.len(), 5);
+        assert_eq!(results[0].id, 99);
+        assert!(trace.distance_computations > 100);
     }
 
     #[test]

@@ -479,7 +479,11 @@ impl HnswIndex {
         allowed: &RoaringBitmap,
     ) -> (Vec<Neighbor>, SearchTrace) {
         let mut trace = SearchTrace::default();
-        let mut results: Vec<Neighbor> = Vec::new();
+        if k == 0 {
+            return (Vec::new(), trace);
+        }
+
+        let mut results: BinaryHeap<Candidate> = BinaryHeap::new();
         for id in allowed.iter() {
             if !self.is_live(id) {
                 trace.tombstoned_visits += 1;
@@ -487,14 +491,31 @@ impl HnswIndex {
             }
             trace.distance_computations += 1;
             trace.nodes_visited += 1;
-            results.push(Neighbor {
+            let candidate = Candidate {
                 id,
                 distance: self.metric.distance(query, self.store.vector(id)),
-            });
+            };
+            let room_left = results.len() < k;
+            let better_than_worst = results
+                .peek()
+                .is_some_and(|worst| candidate.distance < worst.distance);
+            if room_left || better_than_worst {
+                results.push(candidate);
+                if results.len() > k {
+                    results.pop();
+                }
+            }
         }
-        results.sort_by(|a, b| a.distance.total_cmp(&b.distance));
-        results.truncate(k);
-        (results, trace)
+        let mut out = results.into_vec();
+        out.sort();
+        let neighbors = out
+            .into_iter()
+            .map(|candidate| Neighbor {
+                id: candidate.id,
+                distance: candidate.distance,
+            })
+            .collect();
+        (neighbors, trace)
     }
 
     /// Post-filter search. Runs a normal search with a wider beam, then drops the
@@ -1057,6 +1078,15 @@ mod tests {
         let index = line_index(5);
         let (results, _) = index.flat_filtered_search(&[0.0, 0.0], 5, &RoaringBitmap::new());
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn flat_filtered_zero_k_is_empty() {
+        let index = line_index(20);
+        let allowed = even_ids(20);
+        let (results, trace) = index.flat_filtered_search(&[0.0, 0.0], 0, &allowed);
+        assert!(results.is_empty());
+        assert_eq!(trace.distance_computations, 0);
     }
 
     #[test]

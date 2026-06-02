@@ -17,6 +17,10 @@ use loupe_trace::{
 use crate::{Neighbor, SearchTrace};
 
 const ACORN_BRIDGE_FANOUT_MULTIPLIER: usize = 4;
+const FILTERED_SEARCH_BASE_VISIT_MULTIPLIER: usize = 64;
+const FILTERED_SEARCH_MATCH_VISIT_MULTIPLIER: usize = 4;
+const ACORN_FILTERED_SEARCH_BASE_VISIT_MULTIPLIER: usize = 128;
+const ACORN_FILTERED_SEARCH_MATCH_VISIT_MULTIPLIER: usize = 8;
 
 /// Collects the local subgraph a search walks through, for the gated diagnostic
 /// export. It enforces hard caps so it can never grow without bound, and it holds
@@ -165,6 +169,36 @@ impl Ord for Candidate {
             .total_cmp(&other.distance)
             .then(self.id.cmp(&other.id))
     }
+}
+
+fn bitmap_len(bitmap: &RoaringBitmap) -> usize {
+    bitmap.len().try_into().unwrap_or(usize::MAX)
+}
+
+fn filtered_search_visit_limit(
+    total_count: usize,
+    matching_count: usize,
+    ef: usize,
+    expand: bool,
+) -> usize {
+    let base_multiplier = if expand {
+        ACORN_FILTERED_SEARCH_BASE_VISIT_MULTIPLIER
+    } else {
+        FILTERED_SEARCH_BASE_VISIT_MULTIPLIER
+    };
+    let match_multiplier = if expand {
+        ACORN_FILTERED_SEARCH_MATCH_VISIT_MULTIPLIER
+    } else {
+        FILTERED_SEARCH_MATCH_VISIT_MULTIPLIER
+    };
+    let beam_budget = ef.saturating_mul(base_multiplier);
+    let match_budget = matching_count.saturating_mul(match_multiplier);
+    let requested_budget = beam_budget.max(match_budget).max(ef).max(1);
+    requested_budget.min(total_count.max(1))
+}
+
+fn reached_visit_limit(trace: &SearchTrace, start_nodes_visited: u64, visit_limit: usize) -> bool {
+    trace.nodes_visited.saturating_sub(start_nodes_visited) >= visit_limit as u64
 }
 
 /// Which filtered search strategy the adaptive overlay should run.
@@ -628,6 +662,8 @@ impl HnswIndex {
         let mut to_explore = BinaryHeap::new();
         let mut results: BinaryHeap<Candidate> = BinaryHeap::new();
         let mut to_consider: Vec<VectorId> = Vec::new();
+        let start_nodes_visited = trace.nodes_visited;
+        let visit_limit = filtered_search_visit_limit(self.len(), bitmap_len(allowed), ef, expand);
 
         let entry_distance = self.distance(query, entry, trace);
         visited.insert(entry);
@@ -644,6 +680,9 @@ impl HnswIndex {
         }
 
         while let Some(Reverse(current)) = to_explore.pop() {
+            if reached_visit_limit(trace, start_nodes_visited, visit_limit) {
+                break;
+            }
             if results.len() >= ef
                 && results
                     .peek()
@@ -674,6 +713,9 @@ impl HnswIndex {
             }
 
             for &node in &to_consider {
+                if reached_visit_limit(trace, start_nodes_visited, visit_limit) {
+                    break;
+                }
                 if !visited.insert(node) {
                     continue;
                 }
@@ -714,6 +756,11 @@ impl HnswIndex {
         ef: usize,
         max_ef: usize,
     ) -> (Vec<Neighbor>, SearchTrace) {
+        if k == 0 || allowed.is_empty() {
+            return (Vec::new(), SearchTrace::default());
+        }
+
+        let available_matches = bitmap_len(allowed);
         let mut current_ef = ef.max(k);
         let cap = max_ef.max(current_ef);
         let mut total = SearchTrace::default();
@@ -721,7 +768,8 @@ impl HnswIndex {
             let (results, attempt) = self.run_filtered(strategy, query, k, allowed, current_ef);
             total.distance_computations += attempt.distance_computations;
             total.nodes_visited += attempt.nodes_visited;
-            if results.len() >= k || current_ef >= cap {
+            total.tombstoned_visits += attempt.tombstoned_visits;
+            if results.len() >= k || results.len() >= available_matches || current_ef >= cap {
                 return (results, total);
             }
             current_ef = (current_ef * 2).min(cap);
@@ -1062,6 +1110,14 @@ mod tests {
     }
 
     #[test]
+    fn filtered_visit_limit_caps_sparse_graph_work() {
+        let limit = filtered_search_visit_limit(1_000_000, 1_000, 64, true);
+
+        assert!(limit < 1_000_000);
+        assert!(limit >= 64);
+    }
+
+    #[test]
     fn flat_filtered_returns_exact_among_allowed() {
         let index = line_index(10);
         let mut allowed = RoaringBitmap::new();
@@ -1204,7 +1260,7 @@ mod tests {
         let mut allowed = RoaringBitmap::new();
         allowed.insert(10);
         allowed.insert(20);
-        let (results, _) = index.adaptive_filtered_search(
+        let (results, trace) = index.adaptive_filtered_search(
             &[15.0, 15.0],
             5,
             &allowed,
@@ -1213,6 +1269,23 @@ mod tests {
             256,
         );
         assert_eq!(results.len(), 2);
+        assert_eq!(trace.ef_expansions, 0);
+    }
+
+    #[test]
+    fn adaptive_returns_empty_without_widening_when_allowed_is_empty() {
+        let index = line_index(100);
+        let (results, trace) = index.adaptive_filtered_search(
+            &[15.0, 15.0],
+            5,
+            &RoaringBitmap::new(),
+            FilteredStrategy::Acorn,
+            8,
+            256,
+        );
+        assert!(results.is_empty());
+        assert_eq!(trace.distance_computations, 0);
+        assert_eq!(trace.ef_expansions, 0);
     }
 
     #[test]

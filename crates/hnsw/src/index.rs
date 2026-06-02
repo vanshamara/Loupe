@@ -16,6 +16,8 @@ use loupe_trace::{
 
 use crate::{Neighbor, SearchTrace};
 
+const ACORN_BRIDGE_FANOUT_MULTIPLIER: usize = 4;
+
 /// Collects the local subgraph a search walks through, for the gated diagnostic
 /// export. It enforces hard caps so it can never grow without bound, and it holds
 /// only node ids and edges, never vectors.
@@ -632,9 +634,20 @@ impl HnswIndex {
             to_consider.clear();
             to_consider.extend_from_slice(&self.neighbors[current.id as usize][layer]);
             if expand {
+                let bridge_limit = ef
+                    .saturating_mul(ACORN_BRIDGE_FANOUT_MULTIPLIER)
+                    .max(self.config.m_max0);
                 for &neighbor in &self.neighbors[current.id as usize][layer] {
+                    if to_consider.len() >= bridge_limit {
+                        break;
+                    }
                     if !allowed.contains(neighbor) {
-                        to_consider.extend_from_slice(&self.neighbors[neighbor as usize][layer]);
+                        for &bridge in &self.neighbors[neighbor as usize][layer] {
+                            if to_consider.len() >= bridge_limit {
+                                break;
+                            }
+                            to_consider.push(bridge);
+                        }
                     }
                 }
             }

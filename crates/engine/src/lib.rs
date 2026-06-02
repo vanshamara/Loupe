@@ -711,13 +711,13 @@ mod tests {
     }
 
     #[test]
-    fn explain_picks_acorn_adaptive_and_flags_anti_correlation() {
+    fn explain_picks_flat_for_cheap_anti_correlation_and_flags_risk() {
         let collection = anti_collection();
         let query = [185.0, 185.0];
         let filter = Expr::Eq("cat".into(), Value::Str("low".into()));
         let (results, explain) = collection.explain_search(&query, &filter, 10);
 
-        assert_eq!(explain.chosen_plan.strategy, "Acorn+AdaptiveEf");
+        assert_eq!(explain.chosen_plan.strategy, "Flat");
         assert!(
             explain
                 .risk_flags
@@ -736,12 +736,12 @@ mod tests {
     }
 
     #[test]
-    fn explain_picks_post_filter_for_broad_aligned_filter() {
+    fn explain_picks_flat_for_small_broad_aligned_filter() {
         let collection = anti_collection();
         let query = [150.0, 150.0];
         let filter = Expr::Eq("cat".into(), Value::Str("high".into()));
         let (_, explain) = collection.explain_search(&query, &filter, 10);
-        assert_eq!(explain.chosen_plan.strategy, "PostFilter+AdaptiveEf");
+        assert_eq!(explain.chosen_plan.strategy, "Flat");
     }
 
     #[test]
@@ -749,8 +749,8 @@ mod tests {
         let collection = anti_collection();
         let filter = Expr::Eq("cat".into(), Value::Str("low".into()));
         let (results, plan) = collection.search(&[185.0, 185.0], &filter, 5);
-        assert_eq!(plan.strategy, PlannedStrategy::Acorn);
-        assert!(plan.adaptive);
+        assert_eq!(plan.strategy, PlannedStrategy::Flat);
+        assert!(!plan.adaptive);
         for neighbor in &results {
             assert!(neighbor.id < 100);
         }

@@ -112,13 +112,13 @@ pub fn estimate_strategy_costs(
         1.0
     };
 
-    let post_work = (candidate_count / selectivity.max(0.001)).min(shape.total.max(1) as f32);
+    let post_work = post_filter_work(shape, selectivity, candidate_count);
     let post_risk = post_filter_risk(selectivity, shape.correlation, history, config);
 
-    let in_traversal_work = candidate_count * in_traversal_multiplier(selectivity, shape);
+    let in_traversal_work = in_traversal_work(shape, selectivity, candidate_count);
     let in_traversal_risk = in_traversal_risk(selectivity, shape.correlation, history, config);
 
-    let acorn_work = candidate_count * acorn_multiplier(selectivity, shape.correlation, config);
+    let acorn_work = acorn_work(shape, selectivity, candidate_count, config);
     let acorn_risk = acorn_risk(selectivity, shape.correlation, history, config);
 
     vec![
@@ -167,7 +167,7 @@ fn flat_work(shape: &QueryShape, config: &PlannerConfig) -> f32 {
     {
         return work * 0.25;
     }
-    work * 10.0
+    work
 }
 
 fn estimate(
@@ -182,6 +182,14 @@ fn estimate(
         recall_miss_risk,
         total_cost: expected_work + recall_miss_risk * config.recall_miss_penalty,
     }
+}
+
+fn post_filter_work(shape: &QueryShape, selectivity: f32, candidate_count: f32) -> f32 {
+    if shape.correlation == CorrelationClass::AntiCorrelated && selectivity < 0.95 {
+        return shape.total.max(1) as f32;
+    }
+
+    (candidate_count / selectivity.max(0.001)).min(shape.total.max(1) as f32)
 }
 
 fn post_filter_risk(
@@ -246,28 +254,43 @@ fn acorn_risk(
     (base + history * 0.25).clamp(0.0, 1.0)
 }
 
-fn in_traversal_multiplier(selectivity: f32, shape: &QueryShape) -> f32 {
-    match shape.correlation {
-        CorrelationClass::AntiCorrelated => 20.0,
+fn in_traversal_work(shape: &QueryShape, selectivity: f32, candidate_count: f32) -> f32 {
+    if shape.correlation == CorrelationClass::AntiCorrelated {
+        return anti_correlated_graph_work(shape, selectivity);
+    }
+
+    let multiplier = match shape.correlation {
         CorrelationClass::Positive if selectivity >= 0.1 => 2.0,
         _ if selectivity < 0.01 => 8.0,
         _ if selectivity < 0.2 => 3.0,
         _ => 2.0,
+    };
+    candidate_count * multiplier
+}
+
+fn acorn_work(
+    shape: &QueryShape,
+    selectivity: f32,
+    candidate_count: f32,
+    config: &PlannerConfig,
+) -> f32 {
+    if shape.correlation == CorrelationClass::AntiCorrelated {
+        return anti_correlated_graph_work(shape, selectivity);
+    }
+
+    if selectivity < config.strict_selectivity {
+        candidate_count * 8.0
+    } else if selectivity < 0.2 {
+        candidate_count * 10.0
+    } else {
+        candidate_count * 12.0
     }
 }
 
-fn acorn_multiplier(
-    selectivity: f32,
-    correlation: CorrelationClass,
-    config: &PlannerConfig,
-) -> f32 {
-    if correlation == CorrelationClass::AntiCorrelated || selectivity < config.strict_selectivity {
-        8.0
-    } else if selectivity < 0.2 {
-        10.0
-    } else {
-        12.0
-    }
+fn anti_correlated_graph_work(shape: &QueryShape, selectivity: f32) -> f32 {
+    let total = shape.total.max(1) as f32;
+    let graph_fraction = 1.0 - selectivity.clamp(0.0, 1.0) * 0.75;
+    total * graph_fraction.max(0.1)
 }
 
 fn plan_reason(
@@ -278,6 +301,9 @@ fn plan_reason(
     match strategy {
         PlannedStrategy::Flat if shape.matching_count <= config.flat_threshold.max(shape.k) => {
             "cost model: exact scan has the lowest expected work"
+        }
+        PlannedStrategy::Flat if shape.correlation == CorrelationClass::AntiCorrelated => {
+            "cost model: exact scan is cheaper than graph bridging"
         }
         PlannedStrategy::Flat => "cost model: exact scan avoids recall risk",
         PlannedStrategy::PostFilter => "cost model: broad aligned filter keeps post-filter cheap",
@@ -402,6 +428,26 @@ mod tests {
             &PlannerConfig::default(),
         );
         assert_eq!(plan.strategy, PlannedStrategy::Acorn);
+        assert!(plan.adaptive);
+    }
+
+    #[test]
+    fn flat_for_large_anti_correlated_filter_when_graph_walk_is_worse() {
+        let plan = choose_plan(
+            &shape(100_000, 1_000_000, CorrelationClass::AntiCorrelated),
+            &PlannerConfig::default(),
+        );
+        assert_eq!(plan.strategy, PlannedStrategy::Flat);
+        assert!(!plan.adaptive);
+    }
+
+    #[test]
+    fn post_filter_for_unfiltered_anti_correlated_shape() {
+        let plan = choose_plan(
+            &shape(1_000_000, 1_000_000, CorrelationClass::AntiCorrelated),
+            &PlannerConfig::default(),
+        );
+        assert_eq!(plan.strategy, PlannedStrategy::PostFilter);
         assert!(plan.adaptive);
     }
 

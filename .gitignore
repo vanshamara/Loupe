@@ -18,6 +18,7 @@ datasets/
 /results/
 bench/results/**/raw/
 bench/results/**/tmp/
+benchmark-*.log
 *.hdf5
 *.fvecs
 *.ivecs

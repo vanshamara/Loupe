@@ -163,8 +163,8 @@ already skipping most of the work. Numbers on the full million-vector set land
 with the benchmark suite.
 
 M5 is in progress. Loupe now exports matrix CSVs, Loupe-only SVG plots, external
-baselines for FAISS, Qdrant, Weaviate, and pgvector, and a packaged `siftsmall`
-smoke result. The current all-engine smoke bundle is
+baselines for FAISS, Qdrant, Weaviate, and pgvector, and packaged benchmark
+bundles. The current all-engine smoke bundle is
 `bench/results/siftsmall-m5-all-engines-2026-06-01/summary.md`, run on the first
 100 `siftsmall` queries:
 
@@ -181,7 +181,22 @@ tradeoff: FAISS is faster but fails hard filtered cells, while Qdrant, pgvector,
 and Weaviate keep perfect or near-perfect recall with higher latency. Loupe is
 faster than those service-style baselines on this run and keeps hard-filter
 recall at 1.000, but its minimum recall is lower. The next step is the same
-Loupe-vs-FAISS shape on SIFT1M, then a bigger all-engine run on a larger CPU box.
+all-engine shape on a larger CPU box.
+
+The first SIFT1M scale run compares Loupe with FAISS on 1,000,000 vectors and
+the first 100 queries. The bundle is
+`bench/results/sift1m-m5-loupe-faiss-overnight-2026-06-02/summary.md`:
+
+| Engine | Mean recall | Min recall | Hard-filter recall | Mean latency |
+|---|---:|---:|---:|---:|
+| Loupe Planner | 0.988 | 0.966 | 0.998 | 871495.5 us |
+| FAISS | 0.601 | 0.000 | 0.000 | 1468.5 us |
+
+This is the clearest current scale result. Loupe wins recall on hard filters,
+especially anti-correlated filters where FAISS post-filter can return no useful
+neighbors. FAISS wins speed by a wide margin. Loupe's slowest cells are the hard
+anti-correlated cases where it spends much more work to preserve recall. That is
+the right tradeoff for the thesis, but it also marks the next performance target.
 
 The benchmark runner also includes a compaction probe. It deletes a controlled
 slice of a durable collection, reports tombstoned visits, distance work, latency,
@@ -445,10 +460,16 @@ python bench/package_results.py \
 The bundle lands in `bench/results/<run-id>/` with copied matrix CSVs, planner
 summary CSVs, copied SVGs, `metadata.json`, and `summary.md`.
 
-The current smoke bundle is in
-`bench/results/siftsmall-smoke-2026-05-31/summary.md`. On this run, Loupe
-Planner averaged 0.995 recall, FAISS under-returned on 10 hard-filter cells, and
-Qdrant, pgvector, and Weaviate returned full result sets on the small dataset.
+The current all-engine smoke bundle is in
+`bench/results/siftsmall-m5-all-engines-2026-06-01/summary.md`. On this run,
+Loupe Planner averaged 0.995 recall, FAISS under-returned on 10 hard-filter
+cells, and Qdrant, pgvector, and Weaviate returned full result sets on the small
+dataset.
+
+The current SIFT1M Loupe-vs-FAISS bundle is in
+`bench/results/sift1m-m5-loupe-faiss-overnight-2026-06-02/summary.md`. On this
+run, Loupe Planner averaged 0.988 recall with 0.998 hard-filter recall. FAISS
+averaged 0.601 recall and under-returned on 10 cells, but was much faster.
 
 For the full million-vector set, run the download script with `sift` instead of
 `siftsmall`, then point the command at the `sift_*` files.

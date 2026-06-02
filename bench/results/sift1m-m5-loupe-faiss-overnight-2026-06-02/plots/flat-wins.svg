@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="560" viewBox="0 0 920 560">
+<style>.title { font: 700 24px system-ui, sans-serif; fill: #0f172a; }.subtitle { font: 14px system-ui, sans-serif; fill: #475569; }.label { font: 12px system-ui, sans-serif; fill: #334155; }.cell-label { font: 12px system-ui, sans-serif; fill: #0f172a; }.axis { stroke: #475569; stroke-width: 1.5; }.axis-label { font: 13px system-ui, sans-serif; fill: #334155; }</style>
+<rect width="100%" height="100%" fill="#ffffff" />
+<text x="90" y="32" class="title">Where Flat Wins</text>
+<text x="90" y="42" class="subtitle">winner uses highest recall, then lowest distance work</text>
+<text x="90.0" y="92" class="label">100.0%</text>
+<text x="235.0" y="92" class="label">50.0%</text>
+<text x="380.0" y="92" class="label">10.0%</text>
+<text x="525.0" y="92" class="label">1.0%</text>
+<text x="670.0" y="92" class="label">0.1%</text>
+<text x="20" y="146.0" class="label">random</text>
+<rect x="90.0" y="110.0" width="120" height="54" rx="6" fill="#2563eb" stroke="#cbd5e1" />
+<text x="100.0" y="142.0" class="cell-label">Flat</text>
+<rect x="235.0" y="110.0" width="120" height="54" rx="6" fill="#2563eb" stroke="#cbd5e1" />
+<text x="245.0" y="142.0" class="cell-label">Flat</text>
+<rect x="380.0" y="110.0" width="120" height="54" rx="6" fill="#f1f5f9" stroke="#cbd5e1" />
+<text x="390.0" y="142.0" class="cell-label">InTraversal</text>
+<rect x="525.0" y="110.0" width="120" height="54" rx="6" fill="#2563eb" stroke="#cbd5e1" />
+<text x="535.0" y="142.0" class="cell-label">Flat</text>
+<rect x="670.0" y="110.0" width="120" height="54" rx="6" fill="#2563eb" stroke="#cbd5e1" />
+<text x="680.0" y="142.0" class="cell-label">Flat</text>
+<text x="20" y="226.0" class="label">positive</text>
+<rect x="90.0" y="190.0" width="120" height="54" rx="6" fill="#2563eb" stroke="#cbd5e1" />
+<text x="100.0" y="222.0" class="cell-label">Flat</text>
+<rect x="235.0" y="190.0" width="120" height="54" rx="6" fill="#2563eb" stroke="#cbd5e1" />
+<text x="245.0" y="222.0" class="cell-label">Flat</text>
+<rect x="380.0" y="190.0" width="120" height="54" rx="6" fill="#2563eb" stroke="#cbd5e1" />
+<text x="390.0" y="222.0" class="cell-label">Flat</text>
+<rect x="525.0" y="190.0" width="120" height="54" rx="6" fill="#2563eb" stroke="#cbd5e1" />
+<text x="535.0" y="222.0" class="cell-label">Flat</text>
+<rect x="670.0" y="190.0" width="120" height="54" rx="6" fill="#2563eb" stroke="#cbd5e1" />
+<text x="680.0" y="222.0" class="cell-label">Flat</text>
+<text x="20" y="306.0" class="label">anti_correlated</text>
+<rect x="90.0" y="270.0" width="120" height="54" rx="6" fill="#2563eb" stroke="#cbd5e1" />
+<text x="100.0" y="302.0" class="cell-label">Flat</text>
+<rect x="235.0" y="270.0" width="120" height="54" rx="6" fill="#2563eb" stroke="#cbd5e1" />
+<text x="245.0" y="302.0" class="cell-label">Flat</text>
+<rect x="380.0" y="270.0" width="120" height="54" rx="6" fill="#2563eb" stroke="#cbd5e1" />
+<text x="390.0" y="302.0" class="cell-label">Flat</text>
+<rect x="525.0" y="270.0" width="120" height="54" rx="6" fill="#2563eb" stroke="#cbd5e1" />
+<text x="535.0" y="302.0" class="cell-label">Flat</text>
+<rect x="670.0" y="270.0" width="120" height="54" rx="6" fill="#2563eb" stroke="#cbd5e1" />
+<text x="680.0" y="302.0" class="cell-label">Flat</text>
+<text x="20" y="386.0" class="label">clustered_by_tenant</text>
+<rect x="90.0" y="350.0" width="120" height="54" rx="6" fill="#2563eb" stroke="#cbd5e1" />
+<text x="100.0" y="382.0" class="cell-label">Flat</text>
+<rect x="235.0" y="350.0" width="120" height="54" rx="6" fill="#2563eb" stroke="#cbd5e1" />
+<text x="245.0" y="382.0" class="cell-label">Flat</text>
+<rect x="380.0" y="350.0" width="120" height="54" rx="6" fill="#2563eb" stroke="#cbd5e1" />
+<text x="390.0" y="382.0" class="cell-label">Flat</text>
+<rect x="525.0" y="350.0" width="120" height="54" rx="6" fill="#2563eb" stroke="#cbd5e1" />
+<text x="535.0" y="382.0" class="cell-label">Flat</text>
+<rect x="670.0" y="350.0" width="120" height="54" rx="6" fill="#2563eb" stroke="#cbd5e1" />
+<text x="680.0" y="382.0" class="cell-label">Flat</text>
+</svg>

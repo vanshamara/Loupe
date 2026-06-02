@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="580" viewBox="0 0 980 580">
+<style>.title { font: 700 24px system-ui, sans-serif; fill: #0f172a; }.subtitle { font: 14px system-ui, sans-serif; fill: #475569; }.label { font: 12px system-ui, sans-serif; fill: #334155; }.cell-label { font: 12px system-ui, sans-serif; fill: #0f172a; }.axis { stroke: #475569; stroke-width: 1.5; }.axis-label { font: 13px system-ui, sans-serif; fill: #334155; }</style>
+<rect width="100%" height="100%" fill="#ffffff" />
+<text x="120" y="34" class="title">Average Latency by Engine</text>
+<text x="120" y="56" class="subtitle">microseconds per query over the 20 selectivity x correlation cells</text>
+<line x1="120" y1="490" x2="930" y2="490" class="axis" />
+<line x1="120" y1="490" x2="120" y2="70" class="axis" />
+<text x="420.0" y="560.0" class="axis-label"></text>
+<text x="20" y="380.0" class="axis-label" transform="rotate(-90 20,380.0)">mean latency (us)</text>
+<rect x="274.5" y="70.0" width="96.0" height="420.0" rx="4" fill="#0f172a" />
+<text x="322.5" y="62.0" class="cell-label" text-anchor="middle">871496</text>
+<text x="322.5" y="538" class="label" text-anchor="middle">Loupe Planner</text>
+<rect x="679.5" y="489.3" width="96.0" height="0.7" rx="4" fill="#dc2626" />
+<text x="727.5" y="481.3" class="cell-label" text-anchor="middle">1468</text>
+<text x="727.5" y="538" class="label" text-anchor="middle">FAISS</text>
+</svg>

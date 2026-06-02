@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="560" viewBox="0 0 920 560">
+<style>.title { font: 700 24px system-ui, sans-serif; fill: #0f172a; }.subtitle { font: 14px system-ui, sans-serif; fill: #475569; }.label { font: 12px system-ui, sans-serif; fill: #334155; }.cell-label { font: 12px system-ui, sans-serif; fill: #0f172a; }.axis { stroke: #475569; stroke-width: 1.5; }.axis-label { font: 13px system-ui, sans-serif; fill: #334155; }</style>
+<rect width="100%" height="100%" fill="#ffffff" />
+<text x="90" y="32" class="title">Hard Filter Cells</text>
+<text x="90" y="42" class="subtitle">anti-correlated filters at 1% and 0.1% selectivity</text>
+<text x="90.0" y="86" class="label">Flat</text>
+<text x="220.0" y="86" class="label">PostFilter</text>
+<text x="350.0" y="86" class="label">InTraversal</text>
+<text x="480.0" y="86" class="label">Acorn</text>
+<text x="610.0" y="86" class="label">Acorn+AdaptiveEf</text>
+<text x="740.0" y="86" class="label">Planner</text>
+<text x="30" y="134.0" class="label">1.0%</text>
+<rect x="90.0" y="100.0" width="105" height="54" rx="6" fill="rgb(114,197,94)" stroke="#cbd5e1" />
+<text x="118.0" y="133.0" class="cell-label">1.00</text>
+<rect x="220.0" y="100.0" width="105" height="54" rx="6" fill="rgb(239,246,255)" stroke="#cbd5e1" />
+<text x="248.0" y="133.0" class="cell-label">0.00</text>
+<rect x="350.0" y="100.0" width="105" height="54" rx="6" fill="rgb(114,197,95)" stroke="#cbd5e1" />
+<text x="378.0" y="133.0" class="cell-label">1.00</text>
+<rect x="480.0" y="100.0" width="105" height="54" rx="6" fill="rgb(114,197,95)" stroke="#cbd5e1" />
+<text x="508.0" y="133.0" class="cell-label">1.00</text>
+<rect x="610.0" y="100.0" width="105" height="54" rx="6" fill="rgb(114,197,95)" stroke="#cbd5e1" />
+<text x="638.0" y="133.0" class="cell-label">1.00</text>
+<rect x="740.0" y="100.0" width="105" height="54" rx="6" fill="rgb(114,197,95)" stroke="#cbd5e1" />
+<text x="768.0" y="133.0" class="cell-label">1.00</text>
+<text x="30" y="214.0" class="label">0.1%</text>
+<rect x="90.0" y="180.0" width="105" height="54" rx="6" fill="rgb(114,197,94)" stroke="#cbd5e1" />
+<text x="118.0" y="213.0" class="cell-label">1.00</text>
+<rect x="220.0" y="180.0" width="105" height="54" rx="6" fill="rgb(239,246,255)" stroke="#cbd5e1" />
+<text x="248.0" y="213.0" class="cell-label">0.00</text>
+<rect x="350.0" y="180.0" width="105" height="54" rx="6" fill="rgb(114,197,94)" stroke="#cbd5e1" />
+<text x="378.0" y="213.0" class="cell-label">1.00</text>
+<rect x="480.0" y="180.0" width="105" height="54" rx="6" fill="rgb(114,197,94)" stroke="#cbd5e1" />
+<text x="508.0" y="213.0" class="cell-label">1.00</text>
+<rect x="610.0" y="180.0" width="105" height="54" rx="6" fill="rgb(114,197,94)" stroke="#cbd5e1" />
+<text x="638.0" y="213.0" class="cell-label">1.00</text>
+<rect x="740.0" y="180.0" width="105" height="54" rx="6" fill="rgb(114,197,94)" stroke="#cbd5e1" />
+<text x="768.0" y="213.0" class="cell-label">1.00</text>
+</svg>

@@ -146,7 +146,7 @@ The explaining only means something because the engine under it is real:
 | M8 | WAL plus crash recovery | ✅ done |
 | M9 | gRPC API and CLI (EXPLAIN plus advisor) | ✅ done |
 | M10 | Deletes, dead-node-aware search, compaction | ✅ done |
-| M11 | Cost-based planner | 🟡 in progress |
+| M11 | Cost-based planner | ✅ done |
 | M11.5 | Polish: developer experience and metrics | ✅ done |
 | M12 | (optional) Loupe Graph Explorer, 3D trace view | ✅ done |
 
@@ -183,32 +183,34 @@ faster than those service-style baselines on this run and keeps hard-filter
 recall at 1.000, but its minimum recall is lower. The next step is the same
 all-engine shape on a larger CPU box.
 
-The first SIFT1M scale run compares Loupe with FAISS on 1,000,000 vectors and
+The current SIFT1M scale run compares Loupe with FAISS on 1,000,000 vectors and
 the first 100 queries. The bundle is
-`bench/results/sift1m-m5-loupe-faiss-overnight-2026-06-02/summary.md`:
+`bench/results/sift1m-m5-loupe-faiss-flat-fraction-2026-06-02/summary.md`:
 
 | Engine | Mean recall | Min recall | Hard-filter recall | Mean latency |
 |---|---:|---:|---:|---:|
-| Loupe Planner | 0.988 | 0.966 | 0.998 | 871495.5 us |
-| FAISS | 0.601 | 0.000 | 0.000 | 1468.5 us |
+| Loupe Planner | 0.990 | 0.966 | 1.000 | 2062.0 us |
+| FAISS | 0.601 | 0.000 | 0.000 | 2118.4 us |
 
 This is the clearest current scale result. Loupe wins recall on hard filters,
 especially anti-correlated filters where FAISS post-filter can return no useful
-neighbors. FAISS wins speed by a wide margin. Loupe's slowest cells are the hard
-anti-correlated cases where it spends much more work to preserve recall. That is
-the right tradeoff for the thesis, but it also marks the next performance target.
+neighbors. FAISS remains the simple speed baseline, but on this local run Loupe's
+planner is also slightly faster on mean latency while returning far better
+filtered results. The honest caveat is scope: this is Loupe versus FAISS on the
+first 100 SIFT1M queries. The larger Qdrant, Weaviate, and pgvector SIFT1M runs
+still need a stronger CPU box.
 
 The benchmark runner also includes a compaction probe. It deletes a controlled
 slice of a durable collection, reports tombstoned visits, distance work, latency,
 and WAL bytes, then compacts and reports the same numbers again.
 
-M11 has started. The live planner now scores `Flat`, `PostFilter`,
-`InTraversal`, and `Acorn` with a cost model over selectivity, candidate count,
-`k`, vector count, `ef`, correlation, and historical recall misses. The remaining
-work is calibration against the benchmark matrix and replay logs. The benchmark
-summary and replay command now keep the old M4 rule ladder as a baseline and
-print recall, distance work, and regret for `RuleLadder` and `CostModel` side by
-side. The first M11 calibration bundle is in
+M11 has landed as a working cost-model planner. The live planner now scores
+`Flat`, `PostFilter`, `InTraversal`, and `Acorn` with a cost model over
+selectivity, candidate count, `k`, vector count, `ef`, correlation, historical
+recall misses, and a scale-aware exact-scan cutoff. The benchmark summary and
+replay command keep the old M4 rule ladder as a baseline and print recall,
+distance work, and regret for `RuleLadder` and `CostModel` side by side. The
+first M11 calibration bundle is in
 `bench/results/siftsmall-m11-calibration-2026-06-01/summary.md`; on that older
 run, `CostModel` matched `RuleLadder` at 0.995 mean recall, 936 mean distance
 work, and 0.140 regret. After tuning, the packaged calibration proof is in
@@ -218,8 +220,9 @@ reduced mean distance work from 936 to 859, and reduced regret from 0.140 to
 0.060. The replay win proof is in
 `bench/results/m11-replay-win-2026-06-01/summary.md`; on that skewed workload,
 `CostModel` improved mean recall from 0.000 to 1.000 and reduced regret from
-1.000 to 0.000. The remaining M11 work is to rerun the SIFT1M benchmark after
-the planner and exact-scan speedups.
+1.000 to 0.000. The SIFT1M bundle above is the larger planner proof: `CostModel`
+improved mean recall from 0.949 to 0.990, reduced mean distance work from 115,700
+to 44,640, and reduced regret from 0.314 to 0.096 versus `RuleLadder`.
 
 ## EXPLAIN Reference Workflow
 
@@ -528,9 +531,9 @@ cells, and Qdrant, pgvector, and Weaviate returned full result sets on the small
 dataset.
 
 The current SIFT1M Loupe-vs-FAISS bundle is in
-`bench/results/sift1m-m5-loupe-faiss-overnight-2026-06-02/summary.md`. On this
-run, Loupe Planner averaged 0.988 recall with 0.998 hard-filter recall. FAISS
-averaged 0.601 recall and under-returned on 10 cells, but was much faster.
+`bench/results/sift1m-m5-loupe-faiss-flat-fraction-2026-06-02/summary.md`. On
+this run, Loupe Planner averaged 0.990 recall with 1.000 hard-filter recall.
+FAISS averaged 0.601 recall and under-returned on 10 cells.
 
 For the full million-vector set, run the download script with `sift` instead of
 `siftsmall`, then point the command at the `sift_*` files.

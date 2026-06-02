@@ -41,6 +41,7 @@ pub struct PlannerConfig {
     pub max_ef: usize,
     pub correlation_band: f32,
     pub recall_miss_penalty: f32,
+    pub flat_scan_fraction: f32,
 }
 
 impl Default for PlannerConfig {
@@ -53,6 +54,7 @@ impl Default for PlannerConfig {
             max_ef: 512,
             correlation_band: 0.1,
             recall_miss_penalty: 10_000.0,
+            flat_scan_fraction: 0.04,
         }
     }
 }
@@ -153,13 +155,41 @@ pub fn choose_plan(shape: &QueryShape, config: &PlannerConfig) -> Plan {
         .min_by(|left, right| left.total_cost.total_cmp(&right.total_cost))
         .expect("planner always estimates every strategy");
 
+    let strategy = if prefers_exact_scan(shape, winner.strategy, config) {
+        PlannedStrategy::Flat
+    } else {
+        winner.strategy
+    };
+
     Plan {
-        strategy: winner.strategy,
+        strategy,
         ef,
         max_ef,
-        adaptive: winner.strategy != PlannedStrategy::Flat,
-        reason: plan_reason(winner.strategy, shape, config),
+        adaptive: strategy != PlannedStrategy::Flat,
+        reason: plan_reason(strategy, shape, config),
     }
+}
+
+/// A graph walk has to sift through non-matching nodes to fill its beam, so it
+/// touches at least a fixed fraction of the index no matter how few rows match.
+/// When the matching set is smaller than that footprint, an exact scan over the
+/// matches is both cheaper and exact, so we take it over a graph strategy. This
+/// is the scale-relative version of `flat_threshold`, which is blind to dataset
+/// size and so stops helping once the matching set grows past its constant.
+fn prefers_exact_scan(
+    shape: &QueryShape,
+    strategy: PlannedStrategy,
+    config: &PlannerConfig,
+) -> bool {
+    let is_graph_walk = matches!(
+        strategy,
+        PlannedStrategy::InTraversal | PlannedStrategy::Acorn
+    );
+    if !is_graph_walk {
+        return false;
+    }
+    let graph_walk_floor = shape.total as f32 * config.flat_scan_fraction;
+    shape.matching_count as f32 <= graph_walk_floor
 }
 
 fn selectivity(shape: &QueryShape) -> f32 {
@@ -320,6 +350,11 @@ fn plan_reason(
         PlannedStrategy::Flat if shape.correlation == CorrelationClass::AntiCorrelated => {
             "cost model: exact scan is cheaper than graph bridging"
         }
+        PlannedStrategy::Flat
+            if (shape.matching_count as f32) <= shape.total as f32 * config.flat_scan_fraction =>
+        {
+            "cost model: exact scan beats a graph walk over a small matching set"
+        }
         PlannedStrategy::Flat => "cost model: exact scan avoids recall risk",
         PlannedStrategy::PostFilter => "cost model: broad aligned filter keeps post-filter cheap",
         PlannedStrategy::InTraversal => "cost model: filtered traversal balances recall and work",
@@ -467,13 +502,27 @@ mod tests {
     }
 
     #[test]
-    fn acorn_for_strict_filter() {
+    fn flat_for_strict_filter_with_small_match_set() {
+        // 0.3% of a 1M index is 3k matches. A graph walk touches more nodes than
+        // that just to fill its beam, so the exact scan is the cheaper, exact pick.
         let plan = choose_plan(
             &shape(3_000, 1_000_000, CorrelationClass::Neutral),
             &PlannerConfig::default(),
         );
-        assert_eq!(plan.strategy, PlannedStrategy::Acorn);
-        assert!(plan.adaptive);
+        assert_eq!(plan.strategy, PlannedStrategy::Flat);
+        assert!(!plan.adaptive);
+    }
+
+    #[test]
+    fn flat_for_low_selectivity_clustered_filter() {
+        // 1% of a 1M index is 10k matches, below the graph-walk footprint, so the
+        // planner prefers an exact scan even though clustering reads as neutral.
+        let plan = choose_plan(
+            &shape(10_000, 1_000_000, CorrelationClass::Neutral),
+            &PlannerConfig::default(),
+        );
+        assert_eq!(plan.strategy, PlannedStrategy::Flat);
+        assert!(!plan.adaptive);
     }
 
     #[test]

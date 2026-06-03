@@ -1,6 +1,6 @@
 # Loupe
 
-Loupe is a vector search engine for hard filtered search.
+Loupe is a vector search engine for the hard cases of filtered search.
 
 Most vector engines can filter. Loupe focuses on the cases where filters make
 normal ANN search unreliable: tenant filters, permissions, document types, date

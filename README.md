@@ -27,7 +27,7 @@ baseline.
 
 | Engine | Mean recall | Hard-filter recall | Mean latency |
 |---|---:|---:|---:|
-| Loupe Planner | 0.990 | 1.000 | 2.06 ms |
+| Loupe | 0.990 | 1.000 | 2.06 ms |
 | FAISS | 0.601 | 0.000 | 2.12 ms |
 | Qdrant | 0.931 | 0.984 | 106.37 ms |
 | pgvector | 0.991 | 0.982 | 203.45 ms |
@@ -89,4 +89,4 @@ small usability fixes.
 
 ## License
 
-TODO.
+MIT. See [LICENSE](LICENSE).

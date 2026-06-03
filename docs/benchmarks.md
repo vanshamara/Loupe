@@ -27,7 +27,7 @@ Hardware:
 
 | Engine | Mean recall | Min recall | Hard-filter recall | Mean latency | Under-return cells |
 |---|---:|---:|---:|---:|---:|
-| Loupe Planner | 0.990 | 0.966 | 1.000 | 2.06 ms | 1 |
+| Loupe | 0.990 | 0.966 | 1.000 | 2.06 ms | 1 |
 | FAISS | 0.601 | 0.000 | 0.000 | 2.12 ms | 10 |
 | Qdrant | 0.931 | 0.285 | 0.984 | 106.37 ms | 0 |
 | pgvector | 0.991 | 0.901 | 0.982 | 203.45 ms | 0 |
@@ -39,6 +39,10 @@ Result bundles:
   `bench/results/sift1m-m5-loupe-faiss-flat-fraction-2026-06-02/summary.md`
 - External engines:
   `bench/results/sift1m-external-2026-06-02/summary.md`
+
+In this table, `Loupe` means the default engine behavior: the planner chooses
+the strategy for each query cell. The raw result bundle calls that row
+`Loupe Planner`.
 
 ## Planner Result
 

@@ -19,6 +19,7 @@ datasets/
 bench/results/**/raw/
 bench/results/**/tmp/
 benchmark-*.log
+*-results.tar.gz
 *.hdf5
 *.fvecs
 *.ivecs

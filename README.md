@@ -1,544 +1,91 @@
 # Loupe
 
-**A vector search engine that explains its filtered queries.**
+Loupe is a vector search engine for hard filtered search.
 
-Most vector databases can filter a search. Loupe goes further. It shows why a
-query returned the results it did, what other search plans would have done, and
-what to change when the results are weak.
+Most vector engines can filter. Loupe focuses on the cases where filters make
+normal ANN search unreliable: tenant filters, permissions, document types, date
+ranges, and other selective metadata. It chooses a plan per query, explains that
+choice, and lets you replay workloads to see whether planner changes helped.
 
-Loupe answers the questions you actually ask when filtered search goes wrong:
-- Why did this query miss good results?
-- Was filtering after the search the wrong call?
-- Do the rows that pass the filter sit far from what the query is looking for?
-- Would a different search plan have done better?
-- What should I change?
+## What Loupe Does
 
-Loupe is its own engine, not a wrapper around someone else's. The parts you use
-are the planner, `EXPLAIN SEARCH` (with the counterfactual), the advisor that
-reads your query logs, and replay.
+- Builds an HNSW vector index.
+- Stores filter metadata as bitmaps.
+- Chooses between `Flat`, `PostFilter`, `InTraversal`, and `Acorn`.
+- Uses adaptive search width when a graph plan under-returns.
+- Shows `EXPLAIN SEARCH` with rejected plans next to the chosen plan.
+- Replays saved workloads and compares planner regret.
+- Supports WAL recovery, mmap storage, deletes, and compaction.
+- Ships CLI, gRPC server, benchmark tools, and a small graph explorer.
 
-> Status: early development. This README grows as each milestone lands.
+## Current Result
 
----
+The strongest current result is SIFT1M filtered search over the first 100 query
+rows. Loupe keeps hard-filter recall high while FAISS under-returns those cells,
+and external engines keep recall but are much slower in the measured Docker
+baseline.
 
-## Why Loupe?
+| Engine | Mean recall | Hard-filter recall | Mean latency |
+|---|---:|---:|---:|
+| Loupe Planner | 0.990 | 1.000 | 2.06 ms |
+| FAISS | 0.601 | 0.000 | 2.12 ms |
+| Qdrant | 0.931 | 0.984 | 106.37 ms |
+| pgvector | 0.991 | 0.982 | 203.45 ms |
+| Weaviate | 0.959 | 0.982 | 754.90 ms |
 
-Real search is rarely just vector search. You almost always search with filters:
-a tenant id, a document type, a date range, permissions. HNSW is built to walk a
-graph, and a filter can break the path it wants to take. Filtering before the
-search and filtering after both fall down, just in different cases.
+Read the details, caveats, commands, and result bundle links in
+[docs/benchmarks.md](docs/benchmarks.md).
 
-Other systems do filtered search, but they keep the reasoning hidden. They do
-not show you the assumptions they made, the risk to recall, or what the other
-plans would have done. Loupe does.
+## When To Use It
 
-| | pgvector | Pinecone | Weaviate | Loupe |
-|---|---|---|---|---|
-| Filtered search | one fixed path, can pick wrong at scale | managed, hidden | HNSW plus ACORN, one fixed strategy | measures the query, picks from several strategies |
-| Explainability | SQL `EXPLAIN` only | none | limited | `EXPLAIN SEARCH` plus the counterfactual: chosen plan next to the others |
-| Hard filters (0.1% of rows, pulling away from the query) | recall and speed drop off | varies | ACORN helps | ACORN-style walk plus adaptive search width, picked per query |
-| Cost | self-hosted | paid by usage | self-hosted or cloud | self-hosted, open |
+Use Loupe when filtered recall matters and you need to understand why a query
+missed good results.
 
-In one line: Qdrant, Weaviate, and Pinecone do filtered search. Loupe lets you
-inspect it, replay it, and tune it.
+Use FAISS when raw local ANN speed matters most and filtering is simple.
 
-## When to use Loupe
+Use pgvector when vectors belong inside Postgres.
 
-Use Loupe when filtered recall is part of the product, not just an implementation
-detail. The strong fit is a search system with tenant filters, permissions,
-document types, date ranges, or other metadata filters where bad recall is hard
-to debug from the outside.
+Use Qdrant or Weaviate when you need a mature production vector database today.
 
-Use pgvector when your vectors belong next to relational data and Postgres is
-already the system of record. pgvector is an open-source vector similarity search
-extension for Postgres, so it is the simple choice when SQL, transactions, and
-one operational stack matter more than per-query planner visibility.
-
-Use Pinecone when you want a managed service and do not want to own the search
-engine. Pinecone runs as a managed vector database service on major cloud
-platforms. That is a good trade when operations matter more than seeing every
-plan choice.
-
-Use Qdrant or Weaviate when you want a mature vector database with filtering
-already built in. Weaviate documents ACORN as its default filter strategy, and
-Qdrant documents payload filtering as a core search feature. Loupe is different
-because it is built around showing the plan, replaying the workload, and measuring
-regret.
-
-Do not use Loupe yet when you need a production SLA, hosted operations, mature
-client libraries, or a large cluster story today. Loupe is still early. The point
-right now is explainable filtered search, cost-model research, and a real engine
-that makes the planner claims testable.
-
-Sources for the comparison: [pgvector](https://github.com/pgvector/pgvector),
-[Pinecone architecture](https://docs.pinecone.io/reference/architecture/serverless-architecture),
-[Weaviate filtering](https://docs.weaviate.io/weaviate/concepts/filtering), and
-[Qdrant filtering](https://qdrant.tech/documentation/search/filtering/).
-
-The short war story: a user searches inside one tenant and one document type.
-The nearest vectors overall are outside that filter, so post-filtering returns
-weak results or too few rows. Loupe detects that the filter is working against
-the query, chooses a stricter traversal, shows the rejected plans, and lets you
-replay the same workload after a planner or compaction change.
-
----
-
-## Architecture
-
-For the deeper system writeup, see [docs/architecture.md](docs/architecture.md).
-
-```mermaid
-flowchart TD
-    C[gRPC / CLI] --> E[engine: collection API]
-    E --> P[planner: estimate query cost and pick a strategy]
-    P --> S{execution strategy}
-    P --> CF[counterfactual: chosen plan vs the others, plus planner_regret]
-    S --> H[hnsw: beam search, fills a SearchTrace]
-    E --> F[filter: metadata plus roaring bitmaps]
-    H --> D[distance: SIMD L2 / dot / cosine]
-    H --> ST[storage: in-memory first, mmap later]
-    E --> W[wal: durability and recovery]
-    E --> A[advisor: query logs and stats turn into recommendations]
-    H --> X[EXPLAIN: SearchTrace becomes plan, counterfactual, recommendations]
-```
-
----
-
-## What you can run
-
-| Command | What it answers |
-|---|---|
-| `loupe explain` | Why this result? Shows the chosen plan and the alternatives for one query. |
-| `loupe advise` | What is wrong across my workload? Reads query logs and suggests fixes. |
-| `loupe replay` | Did my change help? Replays a saved workload and reports before and after. |
-| `loupe stats` | Is my collection healthy? Shows live/deleted counts, fragmentation, and compaction signals. |
-| `loupe metrics` | What should I scrape? Exports Prometheus text from logs, stats, and planner summaries. |
-| `loupe bench` | How does it compare? Runs test workloads and makes plots. |
-| `scripts/run-canonical-workflow.sh` | How does the whole story fit? Runs build, explain, replay, advise, stats, delete, and compact. |
-
-There is also the Loupe Graph Explorer (optional, M12). It is a 3D web view of
-one query's path. You watch the chosen plan walk the local graph next to the
-plans it rejected, with the filtered-out nodes and the top results color-coded.
-
-## Under the hood
-
-The explaining only means something because the engine under it is real:
-- HNSW index. A layered graph with beam search, built on a storage layer it can swap out.
-- SIMD distance. NEON on Apple Silicon, AVX on x86, with a plain version as a fallback and a check.
-- mmap storage. Search a sealed index on disk without loading all of it into memory.
-- Write-ahead log. Crash recovery you can prove by killing the process mid-write.
-- Deletes plus tombstone-aware compaction.
-
----
-
-## Status
-
-| Milestone | Scope | State |
-|---|---|---|
-| M0 | In-memory HNSW, SearchTrace, storage accessor, bench skeleton | ✅ done |
-| M1 | SIMD distance kernels (NEON / AVX) | ✅ done |
-| M2 | Filtered search: the strategies | ✅ done |
-| M3 | Correlation-aware benchmark matrix plus arXiv corpus | ✅ done |
-| M4 | Rule-based planner plus EXPLAIN SEARCH (counterfactual and regret) | ✅ done |
-| M5 | Comparison vs FAISS / Qdrant / Weaviate / pgvector | 🟡 in progress |
-| M6 | Query-log advisor | ✅ done |
-| M7 | Disk-backed storage (mmap) | ✅ done |
-| M8 | WAL plus crash recovery | ✅ done |
-| M9 | gRPC API and CLI (EXPLAIN plus advisor) | ✅ done |
-| M10 | Deletes, dead-node-aware search, compaction | ✅ done |
-| M11 | Cost-based planner | ✅ done |
-| M11.5 | Polish: developer experience and metrics | ✅ done |
-| M12 | (optional) Loupe Graph Explorer, 3D trace view | ✅ done |
-
-Legend: ⬜ not started · 🟡 in progress · ✅ done. Links to PRs and issues go here as work lands.
-
----
-
-## Results
-
-First check, on the small SIFT set (10,000 vectors, 128 dimensions, 100 queries):
-recall@10 is 0.997 under both L2 and cosine, at about 12,000 queries per second.
-The search looks at roughly 660 vectors per query instead of all 10,000, so it is
-already skipping most of the work. Numbers on the full million-vector set land
-with the benchmark suite.
-
-M5 is in progress. Loupe now exports matrix CSVs, Loupe-only SVG plots, external
-baselines for FAISS, Qdrant, Weaviate, and pgvector, and packaged benchmark
-bundles. The current all-engine smoke bundle is
-`bench/results/siftsmall-m5-all-engines-2026-06-01/summary.md`, run on the first
-100 `siftsmall` queries:
-
-| Engine | Mean recall | Min recall | Hard-filter recall | Mean latency |
-|---|---:|---:|---:|---:|
-| Loupe Planner | 0.995 | 0.949 | 1.000 | 816.2 us |
-| FAISS | 0.621 | 0.000 | 0.000 | 387.4 us |
-| Qdrant | 1.000 | 0.999 | 1.000 | 2706.3 us |
-| pgvector | 1.000 | 1.000 | 1.000 | 2745.7 us |
-| Weaviate | 1.000 | 0.999 | 1.000 | 12749.1 us |
-
-This is a smoke test, not the final scale proof. It shows the shape of the
-tradeoff: FAISS is faster but fails hard filtered cells, while Qdrant, pgvector,
-and Weaviate keep perfect or near-perfect recall with higher latency. Loupe is
-faster than those service-style baselines on this run and keeps hard-filter
-recall at 1.000, but its minimum recall is lower. The next step is the same
-all-engine shape on a larger CPU box.
-
-The current SIFT1M scale run compares Loupe with FAISS on 1,000,000 vectors and
-the first 100 queries. The bundle is
-`bench/results/sift1m-m5-loupe-faiss-flat-fraction-2026-06-02/summary.md`:
-
-| Engine | Mean recall | Min recall | Hard-filter recall | Mean latency |
-|---|---:|---:|---:|---:|
-| Loupe Planner | 0.990 | 0.966 | 1.000 | 2062.0 us |
-| FAISS | 0.601 | 0.000 | 0.000 | 2118.4 us |
-
-This is the clearest current scale result. Loupe wins recall on hard filters,
-especially anti-correlated filters where FAISS post-filter can return no useful
-neighbors. FAISS remains the simple speed baseline, but on this local run Loupe's
-planner is also slightly faster on mean latency while returning far better
-filtered results. The honest caveat is scope: this is Loupe versus FAISS on the
-first 100 SIFT1M queries. The larger Qdrant, Weaviate, and pgvector SIFT1M runs
-still need a stronger CPU box.
-
-The benchmark runner also includes a compaction probe. It deletes a controlled
-slice of a durable collection, reports tombstoned visits, distance work, latency,
-and WAL bytes, then compacts and reports the same numbers again.
-
-M11 has landed as a working cost-model planner. The live planner now scores
-`Flat`, `PostFilter`, `InTraversal`, and `Acorn` with a cost model over
-selectivity, candidate count, `k`, vector count, `ef`, correlation, historical
-recall misses, and a scale-aware exact-scan cutoff. The benchmark summary and
-replay command keep the old M4 rule ladder as a baseline and print recall,
-distance work, and regret for `RuleLadder` and `CostModel` side by side. The
-first M11 calibration bundle is in
-`bench/results/siftsmall-m11-calibration-2026-06-01/summary.md`; on that older
-run, `CostModel` matched `RuleLadder` at 0.995 mean recall, 936 mean distance
-work, and 0.140 regret. After tuning, the packaged calibration proof is in
-`bench/results/siftsmall-m11-costmodel-win-2026-06-02/summary.md`; on that
-10-query siftsmall matrix, `CostModel` improved mean recall from 0.995 to 1.000,
-reduced mean distance work from 936 to 859, and reduced regret from 0.140 to
-0.060. The replay win proof is in
-`bench/results/m11-replay-win-2026-06-01/summary.md`; on that skewed workload,
-`CostModel` improved mean recall from 0.000 to 1.000 and reduced regret from
-1.000 to 0.000. The SIFT1M bundle above is the larger planner proof: `CostModel`
-improved mean recall from 0.949 to 0.990, reduced mean distance work from 115,700
-to 44,640, and reduced regret from 0.314 to 0.096 versus `RuleLadder`.
-
-## EXPLAIN Reference Workflow
-
-Build a durable collection from an embedded corpus, then explain a filtered query.
-Run the commands with `cargo run -p loupe-cli --bin loupe -- <args>`, or
-`cargo install --path crates/cli` to get a `loupe` binary.
-
-```
-loupe build --base datasets/arxiv/arxiv_base.jsonl --dir /tmp/loupe-arxiv
-loupe explain --dir /tmp/loupe-arxiv --query datasets/arxiv/arxiv_query.jsonl \
-  --index 0 --filter "category=math.PR"
-```
-
-For a small matching set, Loupe can pick `Flat` because the cost model sees exact
-scan as cheaper than graph search. For a strict anti-correlated filter above the
-flat-scan threshold, it should pick `Acorn+AdaptiveEf`. In both cases, the
-counterfactual shows what the other plans would have cost:
-
-```
-chosen plan: Acorn+AdaptiveEf
-plan            chosen   dist/query  returned recall (proxy)
-Flat                         ...
-PostFilter+AdaptiveEf       ...
-InTraversal+AdaptiveEf      ...
-Acorn+AdaptiveEf    yes     ...
-risk flags: anti_correlated_filter
-```
-
-The key point is not only which plan won. It is that Loupe shows the rejected
-plans next to the chosen one, with their cost and recall proxy.
-
-Replay a saved workload and compare the old rule ladder with the live cost model:
-
-```
-loupe replay --dir /tmp/loupe-arxiv --query datasets/arxiv/arxiv_query.jsonl \
-  --filter "category=math.PR" --out /tmp/loupe-query-log.jsonl \
-  --compare-planners --planner-summary-csv /tmp/loupe-replay-planners.csv \
-  --feedback-log /tmp/loupe-validation-log.jsonl
-```
-
-The replay log still records the live planner choice for each query. The optional
-planner summary uses EXPLAIN counterfactuals to score `RuleLadder` and
-`CostModel` on the same workload. If `--feedback-log` points at prior query logs
-with `recall_smoke` values, replay feeds that historical miss rate into the cost
-model before planning.
-
-Generate a Markdown retrieval-health report from the same log:
-
-```
-loupe advise --log /tmp/loupe-query-log.jsonl \
-  --markdown-out /tmp/loupe-health.md \
-  --planner-summary-csv /tmp/loupe-replay-planners.csv
-```
-
-The report includes workload-level latency, returned counts, recall smoke, plan
-mix, planner regret, tombstone pressure, and advisor recommendations.
-
-Check collection health after deletes:
-
-```
-loupe stats --dir /tmp/loupe-arxiv
-```
-
-This reports total, live, and deleted vectors, dead-node rate, fragmentation,
-segment count, and whether compaction is recommended.
-
-Export Prometheus text:
-
-```
-loupe metrics --log /tmp/loupe-query-log.jsonl \
-  --dir /tmp/loupe-arxiv \
-  --planner-summary-csv /tmp/loupe-replay-planners.csv \
-  --out /tmp/loupe-metrics.prom
-```
-
-The metrics include planner-choice counts, per-strategy return and recall-smoke
-rates, collection tombstone rate, deleted-vector count, and planner regret.
-
-Run the canonical workflow:
-
-```
-LOUPE_WORKFLOW_DIR=/tmp/loupe-workflow scripts/run-canonical-workflow.sh
-```
-
-The script builds a small skewed workload in a temp directory, runs the hard
-filtered query through EXPLAIN, replays it with planner comparison, writes the
-retrieval-health report, exports Prometheus metrics, creates tombstones,
-compacts, and reruns the health checks. Set `LOUPE_WORKFLOW_DIR`,
-`LOUPE_WORKFLOW_TOTAL`, `LOUPE_WORKFLOW_TARGET`, `LOUPE_WORKFLOW_QUERIES`, or
-`LOUPE_WORKFLOW_DELETES` to tune the run.
-
-Open the optional Graph Explorer:
-
-```
-python -m http.server 8080 --directory viz
-```
-
-Then open `http://localhost:8080`. The viewer loads `viz/sample-trace.json` by
-default and can load another trace JSON from disk. It renders the local graph in
-3D, colors query, returned, matching, filtered-out, tombstoned, and visited nodes,
-and lets you toggle the chosen plan against counterfactual plans.
+Loupe is still early. It is strongest as an explainable filtered-search engine
+and benchmarkable planner project, not as a hosted production database.
 
 ## Quickstart
 
-### Build
+Build and test:
 
-```
+```bash
 cargo build --all
 cargo test --all
 ```
 
-### CLI quickstart
+Run the end-to-end CLI workflow:
 
-The fastest end-to-end CLI check does not need downloaded datasets. It creates a
-small skewed workload in a temp directory, builds a collection, runs
-`loupe explain`, replays the workload, writes an advisor report, exports metrics,
-deletes rows, compacts, and checks stats.
-
-```
+```bash
 LOUPE_WORKFLOW_DIR=/tmp/loupe-workflow scripts/run-canonical-workflow.sh
 ```
 
-The script prints the temp directory and the files it wrote. The most useful ones
-are:
-
-- `explain-before.txt`
-- `planner-summary.csv`
-- `retrieval-health.md`
-- `metrics.prom`
-- `stats-after-compact.txt`
-
-To run the CLI manually after installing it:
-
-```
-cargo install --path crates/cli
-loupe build --base /tmp/loupe-workflow/base.jsonl --dir /tmp/loupe-manual-demo
-loupe explain --dir /tmp/loupe-manual-demo --query /tmp/loupe-workflow/query.jsonl \
-  --index 0 --filter "category=target"
-```
-
-Use the files from `scripts/run-canonical-workflow.sh` for the manual commands,
-or point `LOUPE_WORKFLOW_DIR` at another directory you choose.
-
-### Server quickstart
-
 Start the local gRPC server:
 
-```
+```bash
 cargo run -p loupe-server --bin loupe-server
 ```
 
-It listens on `127.0.0.1:50051`. The server supports create collection, upsert,
-search, and explain-search. If you only want a local smoke test without installing
-a gRPC client, run:
+More commands are in [docs/quickstart.md](docs/quickstart.md).
 
-```
-cargo test -p loupe-server --test grpc
-```
+## Docs
 
-That test creates a collection, upserts vectors, searches with a filter, and runs
-EXPLAIN through the service layer.
+- [Architecture](docs/architecture.md)
+- [Quickstart](docs/quickstart.md)
+- [Benchmarks](docs/benchmarks.md)
+- [Benchmark result bundles](bench/results/README.md)
 
-### Benchmark quickstart
+## Status
 
-Run the recall and filtered-search matrix check on the small SIFT set:
-
-```
-bash scripts/download-datasets.sh siftsmall
-cargo run --release -p loupe-bench --bin loupe-bench -- \
-  datasets/siftsmall/siftsmall_base.fvecs \
-  datasets/siftsmall/siftsmall_query.fvecs \
-  datasets/siftsmall/siftsmall_groundtruth.ivecs \
-  --matrix-csv /tmp/loupe-matrix.csv \
-  --planner-summary-csv /tmp/loupe-planner-summary.csv \
-  --plot-dir /tmp/loupe-plots
-```
-
-The CSV contains one row per selectivity and correlation cell, including the
-engine, runner, strategy chosen, recall, distance work, latency, and returned
-count.
-The planner summary CSV records `RuleLadder` vs `CostModel` recall, distance
-work, regret, and regret delta for M11 calibration.
-The plot directory contains Loupe-only SVGs for fixed strategies vs the planner,
-hard filter cells, where `Acorn+AdaptiveEf` wins, and where `Flat` wins.
-
-### Packaged benchmark suite
-
-Run the one-command benchmark suite when you want a packaged result bundle. The
-runner uses the active Python interpreter for the external adapters. Use Python
-3.11 or newer, and install the FAISS and competitor requirements in your venv
-first when you pass `--engines all`.
-
-```
-python3.14 -m venv .venv
-. .venv/bin/activate
-python -m pip install -r scripts/requirements-faiss.txt -r scripts/requirements-competitors.txt
-python bench/run_benchmark_suite.py \
-  --dataset-name siftsmall \
-  --base datasets/siftsmall/siftsmall_base.fvecs \
-  --query datasets/siftsmall/siftsmall_query.fvecs \
-  --groundtruth datasets/siftsmall/siftsmall_groundtruth.ivecs \
-  --run-id siftsmall-smoke-2026-05-31 \
-  --engines all
-```
-
-If your Python 3.11+ command has a different name, use that instead of
-`python3.14`.
-
-The suite writes temporary CSVs and plots under `/tmp/loupe-benchmark-suite/`,
-starts and stops Docker services for Qdrant, Weaviate, and pgvector when those
-engines are selected, then packages the final bundle under `bench/results/`.
-Loupe runs also include a planner summary CSV in the result bundle.
-It uses the first 10 query rows by default so larger datasets finish in a
-reasonable time. Use `--query-limit 0` for every query row, and use
-`--engines loupe,faiss` for a no-Docker run.
-Long Loupe and FAISS runs print matrix cell and query progress. Loupe also
-flushes its matrix CSV after each completed cell, so you can check the partial
-file under `/tmp/loupe-benchmark-suite/<run-id>/loupe-matrix.csv` while an
-overnight run is still active.
-
-Run the first external baseline with FAISS:
-
-```
-python3.14 -m venv .venv
-. .venv/bin/activate
-python -m pip install -r scripts/requirements-faiss.txt
-python bench/faiss_baseline.py \
-  datasets/siftsmall/siftsmall_base.fvecs \
-  datasets/siftsmall/siftsmall_query.fvecs \
-  datasets/siftsmall/siftsmall_groundtruth.ivecs \
-  --out /tmp/faiss-matrix.csv
-```
-
-FAISS does not expose HNSW distance-computation counts through its Python API, so
-the FAISS CSV uses the searched candidate count as that column. It is still useful
-for recall, latency, returned count, and side-by-side plots.
-
-Run the Docker-backed baselines:
-
-```
-docker compose -f docker/benchmark-compose.yml up -d qdrant weaviate pgvector
-python3.14 -m venv .venv
-. .venv/bin/activate
-python -m pip install -r scripts/requirements-competitors.txt
-python bench/qdrant_baseline.py \
-  datasets/siftsmall/siftsmall_base.fvecs \
-  datasets/siftsmall/siftsmall_query.fvecs \
-  datasets/siftsmall/siftsmall_groundtruth.ivecs \
-  --out /tmp/qdrant-matrix.csv
-python bench/weaviate_baseline.py \
-  datasets/siftsmall/siftsmall_base.fvecs \
-  datasets/siftsmall/siftsmall_query.fvecs \
-  datasets/siftsmall/siftsmall_groundtruth.ivecs \
-  --out /tmp/weaviate-matrix.csv
-python bench/pgvector_baseline.py \
-  datasets/siftsmall/siftsmall_base.fvecs \
-  datasets/siftsmall/siftsmall_query.fvecs \
-  datasets/siftsmall/siftsmall_groundtruth.ivecs \
-  --out /tmp/pgvector-matrix.csv
-```
-
-External engines do not expose the same distance-computation counter Loupe does.
-For those rows, the CSV uses the returned candidate count from the engine as a
-cost proxy.
-
-Generate combined comparison plots:
-
-```
-python bench/comparison_plots.py \
-  /tmp/loupe-matrix.csv \
-  /tmp/faiss-matrix.csv \
-  /tmp/qdrant-matrix.csv \
-  /tmp/weaviate-matrix.csv \
-  /tmp/pgvector-matrix.csv \
-  --out-dir /tmp/loupe-comparison-plots
-```
-
-The output directory contains SVGs for average recall, average latency, hard
-anti-correlated filters, FAISS under-return cells, and Loupe Planner vs external
-engines.
-
-Package a publishable result bundle after the run looks good:
-
-```
-python bench/package_results.py \
-  --run-id siftsmall-smoke-2026-05-31 \
-  --dataset siftsmall \
-  --csv /tmp/loupe-matrix.csv \
-  --csv /tmp/faiss-matrix.csv \
-  --csv /tmp/qdrant-matrix.csv \
-  --csv /tmp/weaviate-matrix.csv \
-  --csv /tmp/pgvector-matrix.csv \
-  --planner-summary-csv /tmp/loupe-planner-summary.csv \
-  --plot-dir /tmp/loupe-plots \
-  --plot-dir /tmp/loupe-comparison-plots \
-  --notes "siftsmall smoke run; external engines use returned candidate count as the cost proxy"
-```
-
-The bundle lands in `bench/results/<run-id>/` with copied matrix CSVs, planner
-summary CSVs, copied SVGs, `metadata.json`, and `summary.md`.
-
-The current all-engine smoke bundle is in
-`bench/results/siftsmall-m5-all-engines-2026-06-01/summary.md`. On this run,
-Loupe Planner averaged 0.995 recall, FAISS under-returned on 10 hard-filter
-cells, and Qdrant, pgvector, and Weaviate returned full result sets on the small
-dataset.
-
-The current SIFT1M Loupe-vs-FAISS bundle is in
-`bench/results/sift1m-m5-loupe-faiss-flat-fraction-2026-06-02/summary.md`. On
-this run, Loupe Planner averaged 0.990 recall with 1.000 hard-filter recall.
-FAISS averaged 0.601 recall and under-returned on 10 cells.
-
-For the full million-vector set, run the download script with `sift` instead of
-`siftsmall`, then point the command at the `sift_*` files.
-
----
+Loupe has the core engine, planner, EXPLAIN path, replay, advisor, metrics, WAL,
+mmap storage, deletes, compaction, server API, CLI, benchmark suite, and graph
+explorer. The remaining work is final polish: public docs, quality checks, and
+small usability fixes.
 
 ## License
 

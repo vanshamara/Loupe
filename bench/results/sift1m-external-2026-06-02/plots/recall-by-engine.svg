@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="580" viewBox="0 0 980 580">
+<style>.title { font: 700 24px system-ui, sans-serif; fill: #0f172a; }.subtitle { font: 14px system-ui, sans-serif; fill: #475569; }.label { font: 12px system-ui, sans-serif; fill: #334155; }.cell-label { font: 12px system-ui, sans-serif; fill: #0f172a; }.axis { stroke: #475569; stroke-width: 1.5; }.axis-label { font: 13px system-ui, sans-serif; fill: #334155; }</style>
+<rect width="100%" height="100%" fill="#ffffff" />
+<text x="120" y="34" class="title">Average Recall by Engine</text>
+<text x="120" y="56" class="subtitle">Loupe uses the Planner row; external engines use their native filtered-search row</text>
+<line x1="120" y1="490" x2="930" y2="490" class="axis" />
+<line x1="120" y1="490" x2="120" y2="70" class="axis" />
+<text x="420.0" y="560.0" class="axis-label"></text>
+<text x="20" y="380.0" class="axis-label" transform="rotate(-90 20,380.0)">mean recall</text>
+<rect x="207.0" y="99.1" width="96.0" height="390.9" rx="4" fill="#2563eb" />
+<text x="255.0" y="91.1" class="cell-label" text-anchor="middle">0.931</text>
+<text x="255.0" y="538" class="label" text-anchor="middle">Qdrant</text>
+<rect x="477.0" y="73.9" width="96.0" height="416.1" rx="4" fill="#16a34a" />
+<text x="525.0" y="65.9" class="cell-label" text-anchor="middle">0.991</text>
+<text x="525.0" y="538" class="label" text-anchor="middle">pgvector</text>
+<rect x="747.0" y="87.1" width="96.0" height="402.9" rx="4" fill="#7c3aed" />
+<text x="795.0" y="79.1" class="cell-label" text-anchor="middle">0.959</text>
+<text x="795.0" y="538" class="label" text-anchor="middle">Weaviate</text>
+</svg>

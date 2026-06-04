@@ -188,7 +188,11 @@ function renderPlanButtons() {
     button.className = "plan-button";
     button.type = "button";
     button.setAttribute("aria-pressed", String(plan.plan === currentPlan));
-    button.innerHTML = `<span>${plan.plan}</span><small>${plan.ordered_events.length} steps</small>`;
+    const label = document.createElement("span");
+    label.textContent = plan.plan;
+    const steps = document.createElement("small");
+    steps.textContent = `${plan.ordered_events.length} steps`;
+    button.append(label, steps);
     button.addEventListener("click", () => {
       currentPlan = plan.plan;
       renderPlanButtons();

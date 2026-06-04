@@ -1,16 +1,17 @@
-# Loupe
+# Loupe: Filtered Vector Search Engine
 
 [![CI](https://github.com/vanshamara/Loupe/actions/workflows/ci.yml/badge.svg)](https://github.com/vanshamara/Loupe/actions/workflows/ci.yml)
 [![CodeQL](https://img.shields.io/badge/CodeQL-enabled-2da44e?logo=github)](https://github.com/vanshamara/Loupe/security/code-scanning)
 [![Rust](https://img.shields.io/badge/Rust-stable-orange?logo=rust)](https://www.rust-lang.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Loupe is a vector search engine for the hard cases of filtered search.
+Loupe handles the filtered queries where normal ANN search gets unreliable, and
+it shows you why it chose the plan it did.
 
-Most vector engines can filter. Loupe focuses on the cases where filters make
-normal ANN search unreliable: tenant filters, permissions, document types, date
-ranges, and other selective metadata. It chooses a plan per query, explains that
-choice, and lets you replay workloads to see whether planner changes helped.
+Most vector engines can filter. Loupe focuses on the hard ones: tenant filters,
+permissions, document types, date ranges, and other selective metadata. It
+chooses a plan per query, explains that choice, and lets you replay workloads to
+see whether planner changes helped.
 
 ## What Loupe Does
 

@@ -1,5 +1,10 @@
 # Loupe
 
+[![CI](https://github.com/vanshamara/Loupe/actions/workflows/ci.yml/badge.svg)](https://github.com/vanshamara/Loupe/actions/workflows/ci.yml)
+[![CodeQL](https://img.shields.io/badge/CodeQL-enabled-2da44e?logo=github)](https://github.com/vanshamara/Loupe/security/code-scanning)
+[![Rust](https://img.shields.io/badge/Rust-stable-orange?logo=rust)](https://www.rust-lang.org)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Loupe is a vector search engine for the hard cases of filtered search.
 
 Most vector engines can filter. Loupe focuses on the cases where filters make

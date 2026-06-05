@@ -3,6 +3,9 @@
 [![CI](https://github.com/vanshamara/Loupe/actions/workflows/ci.yml/badge.svg)](https://github.com/vanshamara/Loupe/actions/workflows/ci.yml)
 [![CodeQL](https://img.shields.io/badge/CodeQL-enabled-2da44e?logo=github)](https://github.com/vanshamara/Loupe/security/code-scanning)
 [![Rust](https://img.shields.io/badge/Rust-stable-orange?logo=rust)](https://www.rust-lang.org)
+[![Rust Edition](https://img.shields.io/badge/Rust%20edition-2024-orange?logo=rust)](Cargo.toml)
+[![rustfmt](https://img.shields.io/badge/rustfmt-checked-2da44e?logo=rust)](rust-toolchain.toml)
+[![clippy](https://img.shields.io/badge/clippy-clean-2da44e?logo=rust)](.github/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Loupe handles the filtered queries where normal ANN search gets unreliable, and
